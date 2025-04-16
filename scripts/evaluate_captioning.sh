@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+export PYTHONPATH=$(pwd)
+
+LOGFILE="./log/eval_log_$(date +%Y%m%d_%H%M%S).txt"
+MODEL_PATH="llava-hf/llava-1.5-7b-hf"  #"./output/llava-datikz-lora/llava-datikz-full"
+OUTPUT_PATH="./results/debug.json"
+
+CMD="CUDA_VISIBLE_DEVICES=0 \
+    python3 src/evaluate_captioning.py \
+    --model_path ${MODEL_PATH} \
+    --output_json ${OUTPUT_PATH}"
+
+echo "Running evaluation at $(date):" | tee "$LOGFILE"
+echo "$CMD" | tee -a "$LOGFILE"
+eval $CMD 2>&1 | tee -a "$LOGFILE"
