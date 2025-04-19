@@ -138,7 +138,7 @@ def main():
         num_train_epochs=args.epochs,
         warmup_ratio=0.03,
         logging_dir="./logs",
-        logging_steps=10,
+        logging_steps=50,
         lr_scheduler_type="cosine",
         optim="adamw_torch",
         save_strategy="epoch",
