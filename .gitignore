@@ -1,0 +1,11 @@
+# 除外するディレクトリ
+log/
+outputs/
+results/
+wandb/
+
+# Python のキャッシュファイル
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
