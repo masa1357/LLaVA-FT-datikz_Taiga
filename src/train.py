@@ -5,12 +5,12 @@ import argparse
 from peft import LoraConfig, TaskType, get_peft_model
 from torchinfo import summary
 from transformers import Trainer, TrainingArguments, set_seed
-from transformers.trainer_utils import is_main_process
+#from transformers.trainer_utils import is_main_process
 
 from datikz_data import DatikzCaptionDataset, collate_fn
-from utils import load_model, merge_lora_and_save
+from utils import load_model
 
-
+os.environ["WANDB_API_KEY"] = "00fe025208d55e3e209f0132d63704ebc4c03b13"
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 os.environ["TORCH_ENABLE_DISTRIBUTED"] = "1"
 os.environ["TORCH_DTENSOR_SKIP_CHECK"] = "1"
@@ -146,7 +146,7 @@ def main():
         fp16=True,
         #dataloader_num_workers=4,
         remove_unused_columns=False,
-        report_to=None if args.report_to == "none" else args.report_to,
+        #report_to=None if args.report_to == "none" else args.report_to,
         run_name=args.run_name,
         save_total_limit=2,
         ddp_find_unused_parameters=True, 

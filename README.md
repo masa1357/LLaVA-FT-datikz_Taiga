@@ -11,3 +11,9 @@ mkdir log
 mkdir outputs
 mkdir results
 ```
+
+
+# Train 
+```
+bash scripts/train.sh
+```
