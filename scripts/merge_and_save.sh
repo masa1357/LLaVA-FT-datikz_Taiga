@@ -3,7 +3,7 @@ set -e
 
 # モデル情報
 BASE_MODEL="llava-hf/llava-1.5-7b-hf"
-LORA_CHECKPOINT="./output/llava-datikz-lora/checkpoint-537"
+LORA_CHECKPOINT="./outputs/llava-datikz-lora/checkpoint-24453"
 SAVE_PATH="./output/llava-datikz-lora/llava-datikz-full"
 
 # 実行コマンド
