@@ -86,12 +86,12 @@ def main():
         task_type=TaskType.CAUSAL_LM,
         target_modules=[
             "q_proj", 
-            #"k_proj", 
+            "k_proj", 
             "v_proj", 
             "o_proj",  # Self-Attention系
             "gate_proj", 
-            #"up_proj", 
-            #"down_proj",    # MLP（FFN）系
+            "up_proj", 
+            "down_proj",    # MLP（FFN）系
         ],
     )
 
