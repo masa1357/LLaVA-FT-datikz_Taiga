@@ -3,7 +3,7 @@ import argparse
 from transformers import AutoProcessor
 from peft import PeftModel
 
-from src.utils import merge_and_save
+from utils import merge_and_save
 
 def main():
     parser = argparse.ArgumentParser(description="Merge LoRA weights into base model and save the result.")

@@ -37,22 +37,27 @@ def main():
     # データ・学習設定
     parser.add_argument("--max_words", type=int, default=256, help="data max_words")
     parser.add_argument("--epochs", type=int, default=1, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=3, help="Batch size per device")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size per device")
+    parser.add_argument("--micro_batch_size", type=int, default=1, help="Batch size per device")
     #parser.add_argument("--grad_accum", type=int, default=4, help="Gradient accumulation steps")
 
     # ログ出力設定
-    parser.add_argument("--report_to", type=str, default="wandb", choices=["wandb", "tensorboard", "none"], help="Reporting backend for logging")
+    parser.add_argument("--report_to", type=str, default="none", choices=["wandb", "tensorboard", "none"], help="Reporting backend for logging")
     parser.add_argument( "--run_name", type=str, default="llava-datikz-lora_test", help="Run name for experiment tracking")
 
     args = parser.parse_args()
 
     set_seed(42)
 
+
     world_size = int(os.environ.get("WORLD_SIZE", 1))
-    micro_batch_size = 1
-    gradient_accumulation_steps = args.batch_size // micro_batch_size
+    gradient_accumulation_steps = args.batch_size // args.micro_batch_size
     if ddp := world_size != 1:
         gradient_accumulation_steps = gradient_accumulation_steps // world_size
+
+
+    #if ddp := world_size != 1:
+    #    gradient_accumulation_steps = gradient_accumulation_steps // world_size
     
     if ddp:
         print(f"[info] DDP is enabled (ddp = {ddp}, world_size = {world_size})")
@@ -64,14 +69,14 @@ def main():
     summary(model)
 
     # データセットの読み込み
-    train_dataset = DatikzCaptionDataset(split="test")
+    train_dataset = DatikzCaptionDataset(split="train")
     eval_dataset = DatikzCaptionDataset(split="test")
     print("[info] len(train_dataset):", len(train_dataset))
     print("[info] len(eval_dataset):", len(eval_dataset))
 
     custom_collate_fn = partial(collate_fn, processor=processor, max_words=args.max_words)
     print(f"[info] custom_collate_fn initialized with processor: {type(processor).__name__}")
-
+    
     # LoRA設定
     peft_config = LoraConfig(
         r=args.lora_r,
@@ -79,7 +84,15 @@ def main():
         lora_dropout=args.lora_dropout,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
-        target_modules=["q_proj", "v_proj"],
+        target_modules=[
+            "q_proj", 
+            #"k_proj", 
+            "v_proj", 
+            "o_proj",  # Self-Attention系
+            "gate_proj", 
+            #"up_proj", 
+            #"down_proj",    # MLP（FFN）系
+        ],
     )
 
     # LoRA適用
@@ -88,24 +101,57 @@ def main():
     print("✅ LoRA has been successfully applied to the model.")
     summary(model)
 
+    # full_finetune_modules のモジュールを再度 trainable にする
+    full_finetune_modules = [
+        "embed_tokens",
+        "lm_head"
+    ]
+    
+    print("🔧 Applying LoRA and enabling full finetune modules...")
+    
+    # LoRA 適用済み（前段）
+    for name, param in model.named_parameters():
+        if any(module_name in name for module_name in full_finetune_modules):
+            param.requires_grad = True
+            param.data = param.data.to(torch.float32) 
+    
+    print("✅ LoRA has been applied.")
+    print(f"✅ The following modules are fully finetuned: {', '.join(full_finetune_modules)}")
+    
+    model.print_trainable_parameters()
+    summary(model)
+
+    print("Trainable parameters:")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(name, param.shape, param.dtype)
+    
+    print("="*100)
+    print("="*100)
+
+
     # TrainingArguments
     training_args = TrainingArguments(
         output_dir=args.output_dir,
-        per_device_train_batch_size=args.batch_size,
+        per_device_train_batch_size=args.micro_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps, #args.grad_accum,
         num_train_epochs=args.epochs,
+        warmup_ratio=0.03,
         logging_dir="./logs",
-        logging_steps=20,
+        logging_steps=10,
+        lr_scheduler_type="cosine",
+        optim="adamw_torch",
         save_strategy="epoch",
         eval_strategy="epoch",
         fp16=True,
-        dataloader_num_workers=4,
+        #dataloader_num_workers=4,
         remove_unused_columns=False,
         report_to=None if args.report_to == "none" else args.report_to,
         run_name=args.run_name,
         save_total_limit=2,
-        ddp_find_unused_parameters=True if ddp else None,
-        load_best_model_at_end=True,
+        ddp_find_unused_parameters=True, 
+        #ddp_find_unused_parameters=False if ddp else None,
+        load_best_model_at_end=False,
     )
 
     print("[info] Initialized TrainingArguments:")

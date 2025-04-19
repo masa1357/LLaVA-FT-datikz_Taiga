@@ -99,7 +99,7 @@ def main():
     rouge_score = rouge.compute(predictions=generated_captions, references=[ref[0] for ref in references])
     meteor_score = meteor.compute(predictions=generated_captions, references=[ref[0] for ref in references])
     #cider_score = cider.compute(predictions=generated_captions, references=references)
-    cider_score = compute_cider_score(generated_captions, references)
+    #cider_score = compute_cider_score(generated_captions, references)
 
     # --- Output ---
     print("\n=== Evaluation Results ===")
@@ -108,7 +108,7 @@ def main():
     for key, val in rouge_score.items():
         print(f"  {key}: {val:.4f}")
     print(f"METEOR: {meteor_score['meteor']:.4f}")
-    print(f"CIDEr: {cider_score:.4f}")
+    #print(f"CIDEr: {cider_score:.4f}")
 
 
 if __name__ == "__main__":
