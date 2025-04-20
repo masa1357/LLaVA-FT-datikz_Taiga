@@ -3,8 +3,8 @@ set -e
 
 # モデル情報
 BASE_MODEL="llava-hf/llava-1.5-7b-hf"
-LORA_CHECKPOINT="./outputs/llava-datikz-lora/checkpoint-24453"
-SAVE_PATH="./output/llava-datikz-lora/llava-datikz-full"
+LORA_CHECKPOINT="./outputs/llava-datikz-lora/checkpoint-10872"
+SAVE_PATH="./outputs/llava-datikz-lora/llava-datikz-full"
 
 # 実行コマンド
 python3 src/merge_and_save_model.py \
