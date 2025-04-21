@@ -11,4 +11,4 @@ datetime=$(date +%Y%m%d_%H%M%S)
 #SBATCH --output=./log/sbatch_eval_result_%j_${datetime}.txt
 #SBATCH --error=./log/sbatch_eval_error_%j_${datetime}.txt
 
-singularity exec --nv llava-ft-datikz_latest.sif bash scripts/evaluate_captioning.sh
+singularity exec --nv ../singularity-sif/llava-ft-datikz_latest.sif bash scripts/evaluate_captioning.sh

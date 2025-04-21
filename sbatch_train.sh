@@ -9,4 +9,4 @@
 #SBATCH --error=./log/sbatch_train_error.txt
 datetime=$(date +%Y%m%d_%H%M%S)
 
-singularity exec --nv llava-ft-datikz_latest.sif bash scripts/train.sh
+singularity exec --nv ../singularity-sif/llava-ft-datikz_latest.sif bash scripts/train.sh

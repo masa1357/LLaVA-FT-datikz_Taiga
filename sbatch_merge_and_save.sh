@@ -10,4 +10,4 @@ datetime=$(date +%Y%m%d_%H%M%S)
 #SBATCH --output=./log/sbatch_merge_and_save_result_%j_${datetime}.txt
 #SBATCH --error=./log/sbatch_merge_and_save_error_%j_${datetime}.txt
 
-singularity exec --nv llava-ft-datikz_latest.sif bash scripts/merge_and_save.sh
+singularity exec --nv ../singularity-sif/llava-ft-datikz_latest.sif bash scripts/merge_and_save.sh
