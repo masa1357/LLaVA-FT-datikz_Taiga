@@ -9,9 +9,9 @@ LOGFILE="./log/eval_log_${datetime}.txt"
 MODEL_PATH="./outputs/llava-datikz-lora/llava-datikz-full"    #"llava-hf/llava-1.5-7b-hf"  #"./output/llava-datikz-lora/llava-datikz-full"
 OUTPUT_PATH="./results/llava-datikz-full_testdata.json"
 
-# 依存ライブラリをインストール（ログにも保存）
-echo "🔧 Installing dependencies..." | tee -a "$LOGFILE"
-pip install --user absl-py nltk rouge-score >> "$LOGFILE" 2>&1
+## 依存ライブラリをインストール（ログにも保存）
+#echo "🔧 Installing dependencies..." | tee -a "$LOGFILE"
+#pip install --user absl-py nltk rouge-score >> "$LOGFILE" 2>&1
 
 
 CMD="CUDA_VISIBLE_DEVICES=3 \
