@@ -1,7 +1,4 @@
 #!/bin/bash
-
-datetime=$(date +%Y%m%d_%H%M%S)
-
 #SBATCH --job-name=LLaVa-FT-datikz_plot_training_log
 #SBATCH --gres=gpu:0
 #SBATCH --time=1:00:00
