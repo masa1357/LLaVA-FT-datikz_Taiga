@@ -2,7 +2,7 @@
 
 datetime=$(date +%Y%m%d_%H%M%S)
 
-#SBATCH --job-name=masuda_LLaVa-FT-datikz_eval
+#SBATCH --job-name=LLaVa-FT-datikz_eval
 #SBATCH --partition=a6000_ada
 #SBATCH --gres=gpu:a6000_ada:1
 #SBATCH --time=168:00:00

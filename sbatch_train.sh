@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=masuda_LLaVa-FT-datikz_train
+#SBATCH --job-name=LLaVa-FT-datikz_train
 #SBATCH --partition=a6000_ada
 #SBATCH --gres=gpu:a6000_ada:4
 #SBATCH --time=168:00:00

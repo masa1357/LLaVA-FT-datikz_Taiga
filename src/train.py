@@ -148,7 +148,7 @@ def main():
         remove_unused_columns=False,
         #report_to=None if args.report_to == "none" else args.report_to,
         run_name=args.run_name,
-        save_total_limit=2,
+        save_total_limit=args.epochs, #2
         ddp_find_unused_parameters=True, 
         #ddp_find_unused_parameters=False if ddp else None,
         load_best_model_at_end=False,
