@@ -7,6 +7,5 @@
 #SBATCH --mem-per-cpu=8G
 #SBATCH --output=./log/sbatch_train_result.txt
 #SBATCH --error=./log/sbatch_train_error.txt
-datetime=$(date +%Y%m%d_%H%M%S)
 
 singularity exec --nv ../singularity-sif/llava-ft-datikz_latest.sif bash scripts/train.sh

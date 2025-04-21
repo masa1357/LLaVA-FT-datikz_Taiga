@@ -10,4 +10,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# 除外するファイル
 .env
+plot_train_log.pdf
+plot_train_log.png
