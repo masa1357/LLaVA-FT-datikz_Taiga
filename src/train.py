@@ -10,7 +10,7 @@ from transformers import Trainer, TrainingArguments, set_seed
 from datikz_data import DatikzCaptionDataset, collate_fn
 from utils import load_model
 
-os.environ["WANDB_API_KEY"] = "00fe025208d55e3e209f0132d63704ebc4c03b13"
+os.environ["WANDB_API_KEY"] = "your_api_key"
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 os.environ["TORCH_ENABLE_DISTRIBUTED"] = "1"
 os.environ["TORCH_DTENSOR_SKIP_CHECK"] = "1"
