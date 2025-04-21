@@ -2,6 +2,8 @@ import os
 from functools import partial
 import json
 import argparse
+
+from dotenv import load_dotenv
 from peft import LoraConfig, TaskType, get_peft_model
 from torchinfo import summary
 from transformers import Trainer, TrainingArguments, set_seed
@@ -10,7 +12,8 @@ from transformers import Trainer, TrainingArguments, set_seed
 from datikz_data import DatikzCaptionDataset, collate_fn
 from utils import load_model
 
-os.environ["WANDB_API_KEY"] = "your_api_key"
+load_dotenv()
+
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 os.environ["TORCH_ENABLE_DISTRIBUTED"] = "1"
 os.environ["TORCH_DTENSOR_SKIP_CHECK"] = "1"
