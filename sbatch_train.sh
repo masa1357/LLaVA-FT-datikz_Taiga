@@ -8,4 +8,5 @@
 #SBATCH --output=./log/sbatch_train_result.txt
 #SBATCH --error=./log/sbatch_train_error.txt
 
+
 singularity exec --nv ../singularity-sif/llava-ft-datikz_latest.sif bash scripts/train.sh

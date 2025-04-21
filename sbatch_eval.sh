@@ -8,4 +8,5 @@
 #SBATCH --output=./log/sbatch_eval_after_result.txt
 #SBATCH --error=./log/sbatch_eval_after_error.txt
 
+
 singularity exec --nv ../singularity-sif/llava-ft-datikz_latest.sif bash scripts/evaluate_captioning.sh
