@@ -1,4 +1,4 @@
-# LLaVa-FT-datikz-
+# LLaVA-FT-datikz-
 
 
 # 作成する必要のあるディレクトリ
