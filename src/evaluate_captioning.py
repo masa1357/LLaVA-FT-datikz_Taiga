@@ -50,20 +50,21 @@ def main():
     parser.add_argument("--output_json", type=str, default="./results/debug.json", help="Path to save or load generated results")
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, processor = load_model(args.model_path)
-    model = model.to(device)
-    model.eval()
-
-    summary(model)
-
     if os.path.exists(args.output_json):
-        print(f"[info] Loading saved captions from {args.output_json}")
+        print(f"✅[info] Loading saved captions from {args.output_json}")
         with open(args.output_json, "r") as f:
             results = json.load(f)
         generated_captions = results["generated_captions"]
         references = results["references"]
     else:
+        print(f"🔄[info] {args.output_json} not found. Generating captions now...")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model, processor = load_model(args.model_path)
+        model = model.to(device)
+        model.eval()
+    
+        summary(model)
+
         print("[info] Generating captions...")
         test_dataset = DatikzCaptionDataset(split="test")
         generated_captions = []
@@ -104,6 +105,11 @@ def main():
     # --- Output ---
     print("\n=== Evaluation Results ===")
     print(f"BLEU: {bleu_score['bleu']:.4f}")
+    print(f"  BLEU-1: {bleu_score['precisions'][0]:.4f}")
+    print(f"  BLEU-2: {bleu_score['precisions'][1]:.4f}")
+    print(f"  BLEU-3: {bleu_score['precisions'][2]:.4f}")
+    print(f"  BLEU-4: {bleu_score['precisions'][3]:.4f}")
+
     print("ROUGE:")
     for key, val in rouge_score.items():
         print(f"  {key}: {val:.4f}")

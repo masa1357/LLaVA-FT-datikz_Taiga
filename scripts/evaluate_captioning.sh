@@ -7,9 +7,10 @@ export TMPDIR=/tmp
 datetime=$(date +%Y%m%d_%H%M%S)
 LOGFILE="./log/eval_log_${datetime}.txt"
 MODEL_PATH="./outputs/llava-datikz-lora/llava-datikz-full"    #"llava-hf/llava-1.5-7b-hf"  #"./outputs/llava-datikz-lora/llava-datikz-full"
-OUTPUT_PATH="./results/llava-datikz_testdata.json"
+OUTPUT_PATH="./results/llava-datikz-base_testdata.json"
 
-CMD="CUDA_VISIBLE_DEVICES=0 \
+#CUDA_VISIBLE_DEVICES=0 \
+CMD="
     python3 src/evaluate_captioning.py \
     --model_path ${MODEL_PATH} \
     --output_json ${OUTPUT_PATH}"
