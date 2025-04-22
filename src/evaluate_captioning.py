@@ -9,39 +9,13 @@ import json
 from PIL import Image
 
 from datikz_data import DatikzCaptionDataset, collate_fn
-from utils import load_model
+from utils import load_model, generate_captions
 from torch.utils.data import DataLoader
 from functools import partial
 
 from torchinfo import summary
 
 from compute_cider import compute_cider_score
-
-def generate_batch_captions(model, processor, image, device, max_new_tokens=128):
-    chat = [{
-        "role": "user",
-        "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": "Please describe this image."}
-        ]
-    }]
-
-    inputs = processor.apply_chat_template(
-        chat,
-        add_generation_prompt=True,
-        tokenize=True,
-        return_dict=True,
-        padding=True,
-        return_tensors="pt"
-    ).to(model.device, torch.float16)
-    #inputs["images"] = images.to(device, dtype=torch.float16)
-
-    #for k in ["input_ids", "attention_mask"]:
-    #    inputs[k] = inputs[k].to(device)
-
-    outputs = model.generate(**inputs, max_new_tokens=max_new_tokens)
-    return processor.tokenizer.batch_decode(outputs, skip_special_tokens=True)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -74,7 +48,7 @@ def main():
             image = data["image"]
             label = data["caption"]
 
-            preds = generate_batch_captions(model, processor, image, device)
+            preds = generate_captions(model, processor, image, device)
 
             for pred in preds:
                 generated_captions.append(pred)
