@@ -1,7 +1,7 @@
 # LLaVA-FT-datikz-
+LLaVAのLoRAチューニング
 
-
-# 作成する必要のあるディレクトリ
+### 作成する必要のあるディレクトリ
 - `LLaVa-FT-datikz/results`
 ```
 cd LLaVa-FT-datikz
@@ -18,8 +18,7 @@ cp .env.example .env
 .env を編集して、必要な値を設定してください。
 
 
-
-# Train 
+### Train 
 ```
 bash scripts/train.sh
 ```
