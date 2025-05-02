@@ -22,3 +22,7 @@ cp .env.example .env
 ```
 bash scripts/train.sh
 ```
+sbatchでの実行
+```
+sbatch sbatch_scripts/sbatch_train.sh
+```
