@@ -3,6 +3,8 @@ log/
 outputs/
 results/
 wandb/
+example/
+data/
 
 # Python のキャッシュファイル
 __pycache__/
