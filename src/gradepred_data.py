@@ -92,7 +92,50 @@ class GradePredictionDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         return self.dataset[idx]
 
-    
+    # ──────────────────────────────────────────────
+    # 特定の質問番号を抽出する関数
+    # ──────────────────────────────────────────────
+    def subset_by_questions(
+        self,
+        q_numbers: list[int] | tuple[int, ...],
+        *,
+        concatenate: bool = False,
+        sep: str = " ",
+    ) -> list[dict]:
+        """
+        指定した質問番号 (1-5) だけを残した新しいサンプル集合を返す。
+
+        Parameters
+        ----------
+        q_numbers    : 取得したい質問番号のリスト/タプル  e.g. [2,4]
+        concatenate  : True にすると L1〜L15 の回答を串刺しで連結し
+                       'input_text' キー１本にまとめて返す
+        sep          : concatenate=True のとき回答間をつなぐ区切り文字列
+
+        Returns
+        -------
+        samples      : list[dict]
+        """
+        qs = {f"Q{n}" for n in q_numbers}
+        out = []
+
+        for sample in self.dataset:
+            new_sample = {"userid": sample["userid"], "labels": sample["labels"]}
+
+            if concatenate:
+                parts = []
+                for c in range(1, 16):
+                    ldict = sample[f"L{c}"]
+                    # Qx が欠損なら fill_token が入っているのでそのまま使う
+                    for q in qs:
+                        parts.append(ldict[q])
+                new_sample["input_text"] = sep.join(parts)
+            else:
+                # ネスト構造を維持して部分的に残す
+                for c in range(1, 16):
+                    new_sample[f"L{c}"] = {q: sample[f"L{c}"][q] for q in qs}
+            out.append(new_sample)
+        return out
 
     # -------- 内部ユーティリティ --------
     def _read_folder(self, path: Path) -> pd.DataFrame:
