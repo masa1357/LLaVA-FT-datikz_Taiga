@@ -10,10 +10,10 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TORCH_DISABLE_DYNAMO=1 TOR
         --nproc_per_node=4 \
         --master_port=29501 \
         src/train.py \
-        --output_dir ./outputs/llava-datikz-lora\
+        --output_dir ./outputs/llama3-elyza-8b-lora\
         --epochs 5 \
-        --batch_size 24 \
-        --run_name llava-datikz-lora_test \
+        --batch_size 10 \
+        --run_name llama3-elyza-8b-lora_test \
         "
 
 echo "Running command at $(date):" | tee "$LOGFILE"
