@@ -132,9 +132,17 @@ def main():
 
     # DDP (Distributed Data Parallel) の設定
     world_size = int(os.environ.get("WORLD_SIZE", 1))
-    gradient_accumulation_steps = args.batch_size // args.micro_batch_size
-    if ddp := world_size != 1:
-        gradient_accumulation_steps = gradient_accumulation_steps // world_size
+    # gradient_accumulation_steps = args.batch_size // args.micro_batch_size
+    # if ddp := world_size != 1:
+    #     gradient_accumulation_steps = gradient_accumulation_steps // world_size
+
+    if args.batch_size % args.micro_batch_size != 0:
+        raise ValueError("--batch_size は --micro_batch_size の整数倍にしてください")
+    ddp = world_size != 1
+
+    gradient_accumulation_steps = max(
+        1, args.batch_size // args.micro_batch_size // world_size
+    )
 
     if ddp:
         print(f"[info] DDP is enabled (ddp = {ddp}, world_size = {world_size})")
@@ -146,7 +154,7 @@ def main():
     summary(model)
 
     # データセットを読み込む
-    dataset_path = "../data/"
+    dataset_path = "./data/"
 
 
     train_dataset = GradePredictionDataset(
