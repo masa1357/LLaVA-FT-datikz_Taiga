@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=LLaVa-FT-datikz_train
+#SBATCH --job-name=ELYZA-8b-LLama3-train
 #SBATCH --partition=a6000_ada
 #SBATCH --gres=gpu:a6000_ada:4
 #SBATCH --time=168:00:00
@@ -9,4 +9,5 @@
 #SBATCH --error=./log/sbatch_train_error.txt
 
 
-singularity exec --nv ../singularity-sif/llava-ft-datikz_latest.sif bash scripts/train.sh
+#--clearenvでCUDAドライバの整合性をとってる -> あとで修正
+singularity exec --nv ../sif/test.sif bash scripts/train.sh
