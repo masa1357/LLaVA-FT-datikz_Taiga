@@ -278,9 +278,9 @@ def main():
     # LoRA 適用済み（前段）
     for name, param in model.named_parameters():
         if any(module_name in name for module_name in full_finetune_modules):
-            param.requires_grad = True
-            param.data = param.data.to(torch.float32)
-            # param.data = param.data.to(torch.float16)
+            param.requires_grad = False  #! True -> 変更
+            # param.data = param.data.to(torch.float32)
+            param.data = param.data.to(torch.float16)
 
     print("✅ LoRA has been applied.")
     print(
@@ -305,6 +305,9 @@ def main():
 
     # TrainingArguments
     training_args = TrainingArguments(
+        # ---
+        gradient_checkpointing=True,
+        # --- 
         output_dir=args.output_dir,
         per_device_train_batch_size=args.micro_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,  # args.grad_accum,
@@ -313,7 +316,7 @@ def main():
         logging_dir="./logs",
         logging_steps=50,
         lr_scheduler_type="cosine",
-        optim="adamw_torch",
+        optim="adamw_torch", # "adamw_bnb_8bit",            # Adam 状態を 75% 圧縮 
         save_strategy="epoch",
         eval_strategy="epoch",
         fp16=True,
@@ -322,7 +325,7 @@ def main():
         # report_to=None if args.report_to == "none" else args.report_to,
         run_name=args.run_name,
         save_total_limit=args.epochs,  # 2
-        ddp_find_unused_parameters=True,  #! もしかしたら消した方がいいかも
+        ddp_find_unused_parameters=False, #True,  #! もしかしたら消した方がいいかも
         # ddp_find_unused_parameters=False if ddp else None,
         load_best_model_at_end=False,
     )
