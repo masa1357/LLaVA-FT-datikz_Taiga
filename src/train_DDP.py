@@ -3,6 +3,7 @@
 # date: 2025/05/06
 # description:
 #   - LLMのLoRAチューニングを行う
+#   - OOM対策として ZeRO Data Parallelism を採用
 # 対象モデル；
 #   - elyza/Llama-3-ELYZA-JP-8B
 # =====================================================================
@@ -132,6 +133,10 @@ def evaluate_generate(
 def main():
     import torch
 
+    # torchのバージョンを確認
+    print(f"[info] torch version: {torch.__version__}")
+    print(f"[info] torch cuda version: {torch.version.cuda}")
+
     torch.compile = None
     if hasattr(torch, "compile"):
         torch.compile = lambda *args, **kwargs: args[0]
@@ -216,7 +221,7 @@ def main():
         print(f"[info] DDP is disabled (ddp = {ddp}, world_size = {world_size})")
 
     # モデルとプロセッサのロード
-    model, tokenizer = load_model(args.base_model)
+    model, tokenizer = load_model(args.base_model, if_ZeRO=True)
     summary(model)
 
     # データセットを読み込む
@@ -316,7 +321,7 @@ def main():
         logging_dir="./logs",
         logging_steps=50,
         lr_scheduler_type="cosine",
-        optim="adamw_torch", # "adamw_bnb_8bit",            # Adam 状態を 75% 圧縮 
+        optim="adamw_torch", # "adamw_bnb_8bit",            # Adam 状態を 75% 圧縮  #! ZeROだと無効化されるっぽい
         save_strategy="epoch",
         eval_strategy="epoch",
         fp16=True,
@@ -328,6 +333,7 @@ def main():
         ddp_find_unused_parameters=False, #True,  #! もしかしたら消した方がいいかも
         # ddp_find_unused_parameters=False if ddp else None,
         load_best_model_at_end=False,
+        deepspeed="ds_config_zero3.json",   #! 追加(ZeRO)
     )
 
     print("[info] Initialized TrainingArguments:")

@@ -1,0 +1,29 @@
+# ds_zero3.yaml  ---------------------------------------------
+compute_environment: LOCAL_MACHINE
+distributed_type: DEEPSPEED
+num_processes: 4            # ← CUDA_VISIBLE_DEVICES に合わせて
+
+mixed_precision: fp16       # bf16 を使うなら "bf16"
+
+main_process_port: 29501    # 任意。torchrun の --master_port 相当
+
+gradient_accumulation_steps: 1   # = global_batch / (per_gpu × nproc)
+
+deepspeed_config:             # Accelerate が内部で JSON 化して渡す
+  zero_stage: 3               # ★ ZeRO-3
+  gradient_accumulation_steps: 1
+  zero3_init_flag: true       # meta→GPU を DS に任せる
+  zero3_save_16bit_model: true
+
+  # ---- 通信／バッファ最適化（お好みで調整） ----
+  allgather_partitions: true
+  allgather_bucket_size: 2e8
+  reduce_scatter: true
+  reduce_bucket_size: 2e8
+  overlap_comm: true
+  contiguous_gradients: true
+
+  # ---- オフロードを使う場合はここを変更 ----
+  offload_param_device: "none"      # "cpu" / "nvme" も可
+  offload_optimizer_device: "none"
+# -------------------------------------------------------------
