@@ -325,6 +325,11 @@ def main():
         save_strategy="epoch",
         eval_strategy="epoch",
         fp16=True,
+        fp16_full_eval=True,                # eval も半精度(2023.05.18)
+        #! 
+        per_device_eval_batch_size=1,
+        eval_accumulation_steps=1,
+        #!  
         # dataloader_num_workers=4,
         remove_unused_columns=False,
         # report_to=None if args.report_to == "none" else args.report_to,
@@ -333,7 +338,7 @@ def main():
         ddp_find_unused_parameters=False, #True,  #! もしかしたら消した方がいいかも
         # ddp_find_unused_parameters=False if ddp else None,
         load_best_model_at_end=False,
-        deepspeed="ds_config_zero3.json",   #! 追加(ZeRO)
+        # deepspeed="ds_config_zero3.json",   #! 追加(ZeRO) -> ymalでCMDから指定したので再削除(2025.05.18)
     )
 
     print("[info] Initialized TrainingArguments:")
