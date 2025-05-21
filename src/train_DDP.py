@@ -21,7 +21,7 @@ import json
 
 from util import load_model
 from gradepred_data import GradePredictionDataset, collate_fn
-
+from torch.nn.utils.rnn import pad_sequence
 # 使用VRAM数の推定
 
 # from accelerate import estimate_memory
@@ -97,7 +97,7 @@ def evaluate_generate(
 
     model.eval()
     loader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+        dataset, batch_size=batch_size, shuffle=False, collate_fn=partial(collate_fn, include_target=False)
     )
 
     correct = 0
@@ -107,21 +107,54 @@ def evaluate_generate(
         for batch in loader:
             ids = batch["input_ids"].to(device)
             mask = batch["attention_mask"].to(device)
+            labels   = batch["labels"]
+
+            # labels == -100 ならプロンプト、そうでないならターゲット
+            prompt_len = (labels == -100).sum(dim=1)
+
             # gold ラベルは dataset 側から直接取得
             golds = [s["grades"] for s in dataset[total : total + len(ids)]]
 
+            # prompt の実長（パディングを除く）
+            prompt_lens = mask.sum(dim=1).tolist()
+
+            # バッチごとに可変長の prompt を生成へ
+            prompt_only = []
+            for seq, plen in zip(ids, prompt_len):
+                prompt_only.append(seq[:plen])
+
+            prompt_only = pad_sequence(prompt_only, batch_first=True, padding_value=tokenizer.pad_token_id)
+            attn_mask   = (prompt_only != tokenizer.pad_token_id).long()
+
             gen = model.generate(
-                input_ids=ids,
-                attention_mask=mask,
+                input_ids=prompt_only.to(device),
+                attention_mask=attn_mask.to(device),
                 max_new_tokens=2,
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
 
-            preds = tokenizer.batch_decode(gen, skip_special_tokens=True)
-            preds = [p.strip()[:1] for p in preds]  # 先頭 1 文字を抽出
-            correct += sum(p == g for p, g in zip(preds, golds))
+            # ③ 生成部だけ取り出して decode
+            preds = []
+            for seq, plen in zip(gen, prompt_lens):
+                gen_ids = seq[plen:]                      # tensor(new_len)
+                text    = tokenizer.decode(
+                    gen_ids, skip_special_tokens=True
+                ).strip()
+                preds.append(text[:1])                    # 先頭1文字で十分なら
+
+            #! 出力を抽出するため，input_ids のlength以降を取得
+            # preds = tokenizer.batch_decode(gen, skip_special_tokens=True)
+            # 入力文，出力文を確認
+            print("input_texts:", tokenizer.batch_decode(ids, skip_special_tokens=True))
+            print("generated_texts:", preds)
+            print("true_labels:", golds)
+            print()
+
+            # preds = [p.strip()[:1] for p in preds]  # 先頭 1 文字を抽出
+            # correct += sum(p == g for p, g in zip(preds, golds))
+            correct += sum(p.casefold() == g.casefold() for p, g in zip(preds, golds))
             total += len(golds)
 
     acc = correct / total
@@ -232,12 +265,14 @@ def main():
         question_filter=[1],
         concatenate=True,
         mode="train",
+        # testcase = True,
     )
     eval_dataset = GradePredictionDataset(
         dataset_path=dataset_path,
         question_filter=[1],
         concatenate=True,
         mode="valid",
+        # testcase = True,
     )
 
     print("[info] len(train_dataset):", len(train_dataset))
@@ -261,10 +296,10 @@ def main():
             # "q_proj",
             # "k_proj",
             # "v_proj",
-            # "o_proj",  # Self-Attention系
+            # "o_proj",       # Self-Attention系
             "gate_proj",
             "up_proj",
-            "down_proj",  # MLP（FFN）系
+            "down_proj",    # MLP（FFN）系
         ],
     )
 
@@ -312,7 +347,7 @@ def main():
     training_args = TrainingArguments(
         # ---
         gradient_checkpointing=True,
-        # --- 
+        # ---
         output_dir=args.output_dir,
         per_device_train_batch_size=args.micro_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,  # args.grad_accum,
@@ -326,10 +361,10 @@ def main():
         eval_strategy="epoch",
         fp16=True,
         fp16_full_eval=True,                # eval も半精度(2023.05.18)
-        #! 
+        #!
         per_device_eval_batch_size=1,
         eval_accumulation_steps=1,
-        #!  
+        #!
         # dataloader_num_workers=4,
         remove_unused_columns=False,
         # report_to=None if args.report_to == "none" else args.report_to,

@@ -66,6 +66,7 @@ class GradePredictionDataset(Dataset):
         valid_ratio: float = 0.2,
         random_state: int = 42,
         mode: str = "all",
+        testcase: bool = False,
     ):
         """
         ファイルを読み込み，データセットを構成する
@@ -80,26 +81,54 @@ class GradePredictionDataset(Dataset):
             sorted(set(question_filter)) if question_filter else list(range(1, 6))
         )
 
-        # ----------------- データ読込 -----------------
-        self.reflection_path = Path(dataset_path) / "Reflection"
-        self.grade_path = Path(dataset_path) / "Grade"
-        for p in (self.reflection_path, self.grade_path):
-            if not p.is_dir():
-                raise FileNotFoundError(f"{p} が存在しません")
+        if testcase:
+            # ----------------- テストデータセット -----------------
+            # JSQuAD のテストデータセットを使用
+            from datasets import load_dataset
 
-        left = self._read_folder(self.reflection_path)
-        right = self._read_folder(self.grade_path)
+            ds = load_dataset("shunk031/JGLUE", name="JSQuAD")
+            # 実際に使うデータと同じ形式にするために，データを調整
+            # 1. id -> userid
+            # 2. context + question -> input_text
+            # 3. answers["text"] -> grades, labels
+            dummy_samples = []
+            for uid, ctx, q, _ in zip(
+                ds["id"], ds["context"], ds["question"], ds["answers"]
+            ):
+                dummy_samples.append(
+                    {
+                        "userid": uid,
+                        "input_text": f"{ctx}\n{q}",
+                        "grades": ds["answers"]["text"][0],
+                        "labels": ds["answers"]["text"][0],
+                    }
+                )
+            self.dataset = dummy_samples
 
-        required_cols = {"userid", "course_number", "question_number", answer_col}
+            # datasetsの要素数を削減 (500sample)
+            self.dataset = self.dataset[:500]
 
-        if not required_cols.issubset(left.columns):
-            raise KeyError(f"reflection csv に {required_cols} がありません")
-        df = pd.merge(left, right, on=merge_key, how="inner")
-        df["label"] = df["grade"].map(label_map)
+        else:
+            # ----------------- データ読込 -----------------
+            self.reflection_path = Path(dataset_path) / "Reflection"
+            self.grade_path = Path(dataset_path) / "Grade"
+            for p in (self.reflection_path, self.grade_path):
+                if not p.is_dir():
+                    raise FileNotFoundError(f"{p} が存在しません")
 
-        # ----------- 前処理 & ネスト構築 -----------
-        df[answer_col] = df[answer_col].apply(self._preprocess)
-        self.dataset = self._build_nested(df)
+            left = self._read_folder(self.reflection_path)
+            right = self._read_folder(self.grade_path)
+
+            required_cols = {"userid", "course_number", "question_number", answer_col}
+
+            if not required_cols.issubset(left.columns):
+                raise KeyError(f"reflection csv に {required_cols} がありません")
+            df = pd.merge(left, right, on=merge_key, how="inner")
+            df["label"] = df["grade"].map(label_map)
+
+            # ----------- 前処理 & ネスト構築 -----------
+            df[answer_col] = df[answer_col].apply(self._preprocess)
+            self.dataset = self._build_nested(df)
 
         self.logger.info(
             f"Dataset init done. users={len(self.dataset)}, qs={self.q_filter}, "
@@ -110,7 +139,7 @@ class GradePredictionDataset(Dataset):
         # 8:2 の層化分割
         # -------------------------------------------------
         labels = [s["labels"] for s in self.dataset]
-        
+
         train_idx, valid_idx = train_test_split(
             range(len(self.dataset)),
             test_size=valid_ratio,
@@ -130,9 +159,7 @@ class GradePredictionDataset(Dataset):
             case _:
                 raise ValueError(f"Invalid mode: {mode}")
 
-        self.logger.info(
-            f"Dataset build done: total={len(self.dataset)}, "
-        )
+        self.logger.info(f"Dataset build done: total={len(self.dataset)}, ")
 
         # df = pd.merge(left, right, on=merge_key, how="inner")
         # df["label"] = df["grade"].map(label_map)
@@ -152,7 +179,6 @@ class GradePredictionDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         return self.dataset[idx]
-
 
     # ──────────────────────────────────────────────
     # 特定の質問番号を抽出する関数
@@ -336,7 +362,11 @@ class GradePredictionDataset(Dataset):
                 )
             else:
                 # ネスト保持モード
-                entry: dict[str, Any] = {"userid": uid, "labels": int(label_val), "grades": str(grade_val)}
+                entry: dict[str, Any] = {
+                    "userid": uid,
+                    "labels": int(label_val),
+                    "grades": str(grade_val),
+                }
                 for c in range(1, 16):
                     key = f"L{c}"
                     if (uid, c) in block.index:
@@ -393,7 +423,14 @@ class GradePredictionDataset(Dataset):
         # return result
 
 
-def collate_fn(batch, tokenizer, max_tokens: int = 4096, question_filter: list[int] | None = [1, 2, 3, 4, 5], logger: logging.Logger | None = None):
+def collate_fn(
+    batch,
+    tokenizer,
+    max_tokens: int = 4096,
+    question_filter: list[int] | None = [1, 2, 3, 4, 5],
+    logger: logging.Logger | None = None,
+    include_target=True,
+):
     logger = logger or logging.getLogger(__name__)
 
     Q_TEXT = {
@@ -419,12 +456,12 @@ def collate_fn(batch, tokenizer, max_tokens: int = 4096, question_filter: list[i
     sources, targets = [], []
     for sample in batch:
         survey = sample["input_text"]
-        grade  = sample["grades"]        # 'A'~'F' (str)
+        grade = sample["grades"]  # 'A'~'F' (str)
 
         # Llama-3 のチャット書式: <s>[INST] system + user [/INST] assistant
         #   - BOS (<s>) は tokenizer.bos_token で自動付与されるので add_special_tokens=True で任せる
         prompt = f"[INST] {preamble}\n\n{survey}\n[/INST]\n"
-        answer = f" {grade}"             # 先頭スペースは BPE で単語境界を作るため
+        answer = f" {grade}"  # 先頭スペースは BPE で単語境界を作るため
 
         sources.append(prompt)
         targets.append(answer)
@@ -437,37 +474,42 @@ def collate_fn(batch, tokenizer, max_tokens: int = 4096, question_filter: list[i
     for src, tgt in zip(sources, targets):
         # add_special_tokens=False → 自前で eos を足す
         prompt_ids = tokenizer.encode(src, add_special_tokens=False)
-        target_ids = tokenizer.encode(tgt,  add_special_tokens=False) + [tokenizer.eos_token_id]
+        target_ids = tokenizer.encode(tgt, add_special_tokens=False) + [
+            tokenizer.eos_token_id
+        ]
 
         # 長さ制御（truncate は “プロンプト側” を先に削る）
         if len(prompt_ids) + len(target_ids) > max_tokens:
             logger.debug(
                 "Truncating prompt: %d + %d > %d",
-                len(prompt_ids), len(target_ids), max_tokens
+                len(prompt_ids),
+                len(target_ids),
+                max_tokens,
             )
             prompt_ids = prompt_ids[: max_tokens - len(target_ids)]
 
-        ids      = prompt_ids + target_ids
-        labels   = [-100] * len(prompt_ids) + target_ids   # prompt は損失計算しない
+        if include_target:
+            ids = prompt_ids + target_ids
+        else:
+            ids = prompt_ids + [tokenizer.eos_token_id]
+
+        labels = [-100] * len(prompt_ids) + target_ids  # prompt は損失計算しない
         attn_mask = [1] * len(ids)
 
-        input_ids.append(torch.tensor(ids,      dtype=torch.long))
-        label_ids.append(torch.tensor(labels,   dtype=torch.long))
+        input_ids.append(torch.tensor(ids, dtype=torch.long))
+        label_ids.append(torch.tensor(labels, dtype=torch.long))
         attn_masks.append(torch.tensor(attn_mask, dtype=torch.long))
 
     # ----- Padding -----
     pad_id = tokenizer.pad_token_id
-    input_ids    = pad_sequence(input_ids, batch_first=True, padding_value=pad_id)
-    labels       = pad_sequence(label_ids, batch_first=True, padding_value=-100)
+    input_ids = pad_sequence(input_ids, batch_first=True, padding_value=pad_id)
+    labels = pad_sequence(label_ids, batch_first=True, padding_value=-100)
     attention_mask = pad_sequence(attn_masks, batch_first=True, padding_value=0)
 
-    logger.info(
-        "Tokenize done: "
-    )
-
+    logger.info("Tokenize done: ")
 
     return {
-        "input_ids":      input_ids,
+        "input_ids": input_ids,
         "attention_mask": attention_mask,
-        "labels":         labels,
+        "labels": labels,
     }

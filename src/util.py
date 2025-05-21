@@ -7,9 +7,7 @@
 # =====================================================================
 import os
 import pprint, torch
-from transformers import  AutoTokenizer, AutoModelForCausalLM #AutoConfig,
-import deepspeed
-# from accelerate.utils import compute_module_sizes, init_empty_weights
+from transformers import  AutoTokenizer, AutoModelForCausalLM 
 
 def load_model(base_model: str = "elyza/Llama-3-ELYZA-JP-8B", use_fast: bool = True, dtype=torch.float16, if_ZeRO: bool = False):
     """
@@ -28,43 +26,10 @@ def load_model(base_model: str = "elyza/Llama-3-ELYZA-JP-8B", use_fast: bool = T
     torch.cuda.set_device(local_rank) #!<追加> ★ rankごとのGPUを固定
     device = f"cuda:{local_rank}"
 
-    # モデルの使用メモリを算出
-    # cfg  = AutoConfig.from_pretrained("elyza/Llama-3-ELYZA-JP-8B")
-
-    # with init_empty_weights():                     # まだ重みをダウンロードしない
-    #     m = AutoModelForCausalLM.from_config(cfg)
-
-    # sizes = compute_module_sizes(m, dtype="float16")   # 各サブモジュールのバイト数
-    # total_MB = sum(s["param_bytes"] for s in sizes.values()) / 2**20
-    # pprint.pprint(sizes["model.embed_tokens"])         # 個別層のサイズ
-    # print(f"TOTAL: {total_MB:.1f} MB")
-
-    #! --- 追加 ---
-    # if if_ZeRO:
-    #     print(f"[info] Loading model from '{base_model}' to device {device} with ZeRO optimization...")
-    #     with deepspeed.zero.Init(
-    #             enabled=True,
-    #             remote_device=f"cuda:{local_rank}",
-    #             pin_memory=True):
-    #         model = AutoModelForCausalLM.from_pretrained(
-    #             base_model,
-    #             torch_dtype=dtype,
-    #             low_cpu_mem_usage=False,               # ★ meta を禁止
-    #             device_map={"": f"cuda:{local_rank}"}, # ★ rank 固定
-    #             trust_remote_code=True,
-    #         )        
-    # #! --- 追加 ---
-    # else:
-    #     print(f"[info] Loading model from '{base_model}' to device {device}...")
-    #     model = AutoModelForCausalLM.from_pretrained(
-    #         base_model, torch_dtype=dtype, device_map={"": device}
-    #     )
-
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         torch_dtype=dtype,
-        low_cpu_mem_usage=True,         # meta テンソルで OK
-        # device_map={"": "meta"},        # ←★ 重要：Accelerate が GPU に割当
+        low_cpu_mem_usage=True,        
         trust_remote_code=True,
     )
  
