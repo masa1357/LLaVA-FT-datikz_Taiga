@@ -87,21 +87,21 @@ class GradePredictionDataset(Dataset):
             from datasets import load_dataset
 
             ds = load_dataset("shunk031/JGLUE", name="JSQuAD")
-            ds = ds["test"]
+            ds = ds["validation"]
             # 実際に使うデータと同じ形式にするために，データを調整
             # 1. id -> userid
             # 2. context + question -> input_text
             # 3. answers["text"] -> grades, labels
             dummy_samples = []
-            for uid, ctx, q, _ in zip(
+            for uid, ctx, q, a in zip(
                 ds["id"], ds["context"], ds["question"], ds["answers"]
             ):
                 dummy_samples.append(
                     {
                         "userid": uid,
                         "input_text": f"{ctx}\n{q}",
-                        "grades": ds["answers"]["text"][0],
-                        "labels": ds["answers"]["text"][0],
+                        "grades": str(a["text"][0]),
+                        "labels": 0,
                     }
                 )
             self.dataset = dummy_samples
