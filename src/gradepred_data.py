@@ -87,6 +87,7 @@ class GradePredictionDataset(Dataset):
             from datasets import load_dataset
 
             ds = load_dataset("shunk031/JGLUE", name="JSQuAD")
+            ds = ds["test"]
             # 実際に使うデータと同じ形式にするために，データを調整
             # 1. id -> userid
             # 2. context + question -> input_text
