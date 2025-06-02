@@ -86,7 +86,7 @@ class GradePredictionDataset(Dataset):
             # JSQuAD のテストデータセットを使用
             from datasets import load_dataset
 
-            ds = load_dataset("shunk031/JGLUE", name="JSQuAD")
+            ds = load_dataset("shunk031/JGLUE", name="JSQuAD", trust_remote_code=True)
             ds = ds["validation"]
             # 実際に使うデータと同じ形式にするために，データを調整
             # 1. id -> userid
@@ -431,6 +431,7 @@ def collate_fn(
     question_filter: list[int] | None = [1, 2, 3, 4, 5],
     logger: logging.Logger | None = None,
     include_target=True,
+    testcase=False,
 ):
     logger = logger or logging.getLogger(__name__)
 
@@ -443,15 +444,19 @@ def collate_fn(
     }
     question = "".join(Q_TEXT[q] for q in question_filter)
 
-    preamble = (
-        "あなたは大学の教授であり，学生の成績を決定する役割を担っています。"
-        "以下に示す学生の講義後アンケートを読み，成績を A, B, C, D, F のいずれかに分類してください。\n"
-        "L は講義回，Q は質問番号を示します（例: L1-Q1）。\n"
-        f"アンケートの質問文は，\n{question}\nです．"
-        "回答が NaN の場合は未回答です。\n"
-        "上記を踏まえ，出力には A/B/C/D/F のいずれか **1 文字のみ** を返してください。\n"
-        "アンケート内容："
-    )
+    if testcase:
+        preamble = (
+            "あなたは大学の教授であり，学生の成績を決定する役割を担っています。"
+            "以下に示す学生の講義後アンケートを読み，成績を A, B, C, D, F のいずれかに分類してください。\n"
+            "L は講義回，Q は質問番号を示します（例: L1-Q1）。\n"
+            f"アンケートの質問文は，\n{question}\nです．"
+            "回答が NaN の場合は未回答です。\n"
+            "上記を踏まえ，出力には A/B/C/D/F のいずれか **1 文字のみ** を返してください。\n"
+            "アンケート内容："
+        )
+    else:
+        preamble = ("")
+
 
     # ----- 入力文とターゲットを作成 -----
     sources, targets = [], []
@@ -513,4 +518,5 @@ def collate_fn(
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": labels,
+        "grades": targets,
     }

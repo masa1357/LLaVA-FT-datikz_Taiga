@@ -22,6 +22,7 @@ import json
 from util import load_model
 from gradepred_data import GradePredictionDataset, collate_fn
 from torch.nn.utils.rnn import pad_sequence
+
 # 使用VRAM数の推定
 
 # from accelerate import estimate_memory
@@ -91,13 +92,16 @@ def estimate_vram_cost(
 
 
 def evaluate_generate(
-    model, tokenizer, dataset, collate_fn, batch_size: int = 4, device="cuda"
+    model, tokenizer, dataset, collate_fn, batch_size: int = 4, device="cuda", log=False
 ):
     from torch.utils.data import DataLoader
 
     model.eval()
     loader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=False, collate_fn=partial(collate_fn, include_target=False)
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=partial(collate_fn, include_target=False),
     )
 
     correct = 0
@@ -107,55 +111,91 @@ def evaluate_generate(
         for batch in loader:
             ids = batch["input_ids"].to(device)
             mask = batch["attention_mask"].to(device)
-            labels   = batch["labels"]
+            labels = batch["labels"]
 
             # labels == -100 ならプロンプト、そうでないならターゲット
-            prompt_len = (labels == -100).sum(dim=1)
+            # prompt_len = (labels == -100).sum(dim=1)
+            prompt_len = (labels == -100).sum(dim=1).tolist()
 
-            # gold ラベルは dataset 側から直接取得
-            golds = [s["grades"] for s in dataset[total : total + len(ids)]]
+            # # gold ラベルは dataset 側から直接取得
+            # golds = [s["grades"] for s in dataset[total : total + len(ids)]]
+            golds = batch["grades"]
 
-            # prompt の実長（パディングを除く）
-            prompt_lens = mask.sum(dim=1).tolist()
+            # # prompt の実長（パディングを除く）
+            # prompt_lens = mask.sum(dim=1).tolist()
 
-            # バッチごとに可変長の prompt を生成へ
-            prompt_only = []
-            for seq, plen in zip(ids, prompt_len):
-                prompt_only.append(seq[:plen])
+            # # バッチごとに可変長の prompt を生成へ
+            # prompt_only = []
+            # for seq, plen in zip(ids, prompt_len):
+            #     prompt_only.append(seq[:plen])
 
-            prompt_only = pad_sequence(prompt_only, batch_first=True, padding_value=tokenizer.pad_token_id)
-            attn_mask   = (prompt_only != tokenizer.pad_token_id).long()
+            # prompt_only = pad_sequence(
+            #     prompt_only, batch_first=True, padding_value=tokenizer.pad_token_id
+            # )
+            # attn_mask = (prompt_only != tokenizer.pad_token_id).long()
+
+            #! ───── ② プロンプトだけを切り出して生成 ─────
+            prompt_only = [seq[:p] for seq, p in zip(ids, prompt_len)]
+            prompt_only = pad_sequence(
+                prompt_only, batch_first=True, padding_value=tokenizer.pad_token_id
+            )
+            attn_mask = (prompt_only != tokenizer.pad_token_id).long()
+            #! ───── ② プロンプトだけを切り出して生成 ─────
 
             gen = model.generate(
                 input_ids=prompt_only.to(device),
                 attention_mask=attn_mask.to(device),
-                max_new_tokens=2,
+                max_new_tokens=512,
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
 
             # ③ 生成部だけ取り出して decode
-            preds = []
-            for seq, plen in zip(gen, prompt_lens):
-                gen_ids = seq[plen:]                      # tensor(new_len)
-                text    = tokenizer.decode(
-                    gen_ids, skip_special_tokens=True
-                ).strip()
-                preds.append(text[:1])                    # 先頭1文字で十分なら
+            # preds = []
+            # for seq, plen in zip(gen, prompt_lens):
+            #     gen_ids = seq[plen:]  # tensor(new_len)
+            #     text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+            #     # preds.append(text[:1])  # 先頭1文字で十分なら
+            #     preds.append(text)
+
+            #! ───── ③ 生成部分だけを decode ─────
+            preds = [
+                tokenizer.decode(seq[p:], skip_special_tokens=True).strip()[:1]
+                for seq, p in zip(gen, prompt_len)
+            ]
+            #! ───── ③ 生成部分だけを decode ─────
 
             #! 出力を抽出するため，input_ids のlength以降を取得
             # preds = tokenizer.batch_decode(gen, skip_special_tokens=True)
             # 入力文，出力文を確認
-            print("input_texts:", tokenizer.batch_decode(ids, skip_special_tokens=True))
-            print("generated_texts:", preds)
-            print("true_labels:", golds)
-            print()
+            # if log:
+            #     print(
+            #         "input_texts:",
+            #         tokenizer.batch_decode(ids, skip_special_tokens=True),
+            #     )
+            #     print("generated_texts:", preds)
+            #     print("true_labels:", golds)
+            #     print()
+
+            #! ───── ④ デバッグ出力（1 行ずつ対応させる） ─────
+            for inp, pr, gd in zip(
+                tokenizer.batch_decode(ids, skip_special_tokens=True),
+                preds,
+                golds,
+            ):
+                print(f"[input] {inp}\n[pred]  {pr}\n[gold]  {gd}\n")
+            #! ───── ④ デバッグ出力（1 行ずつ対応させる） ─────
+
+            #! ───── ⑤ 精度計算 ─────
+            correct += sum(p.casefold() == g.casefold() for p, g in zip(preds, golds))
+            total += len(golds)
+            #! ───── ⑤ 精度計算 ─────
 
             # preds = [p.strip()[:1] for p in preds]  # 先頭 1 文字を抽出
             # correct += sum(p == g for p, g in zip(preds, golds))
-            correct += sum(p.casefold() == g.casefold() for p, g in zip(preds, golds))
-            total += len(golds)
+            # correct += sum(p.casefold() == g.casefold() for p, g in zip(preds, golds))
+            # total += len(golds)
 
     acc = correct / total
     print(f"[eval] accuracy = {acc:.4f} ({correct}/{total})")
@@ -265,21 +305,21 @@ def main():
         question_filter=[1],
         concatenate=True,
         mode="train",
-        # testcase = True,
+        testcase=True,
     )
     eval_dataset = GradePredictionDataset(
         dataset_path=dataset_path,
         question_filter=[1],
         concatenate=True,
         mode="valid",
-        # testcase = True,
+        testcase=True,
     )
 
     print("[info] len(train_dataset):", len(train_dataset))
     print("[info] len(eval_dataset):", len(eval_dataset))
 
     custom_collate_fn = partial(
-        collate_fn, tokenizer=tokenizer, max_tokens=args.max_words
+        collate_fn, tokenizer=tokenizer, max_tokens=args.max_words, testcase=True, question_filter=[1]
     )
     print(
         f"[info] custom_collate_fn initialized with processor: {type(tokenizer).__name__}"
@@ -299,7 +339,7 @@ def main():
             # "o_proj",       # Self-Attention系
             "gate_proj",
             "up_proj",
-            "down_proj",    # MLP（FFN）系
+            "down_proj",  # MLP（FFN）系
         ],
     )
 
@@ -343,6 +383,21 @@ def main():
     print("=" * 100)
     print("=" * 100)
 
+    print("🔍  Running evaluation on vanilla model …")
+    evaluate_generate(
+        model=model,
+        tokenizer=tokenizer,
+        dataset=eval_dataset,
+        collate_fn=custom_collate_fn,
+        device=model.device,
+        batch_size=args.micro_batch_size,
+        log=False,
+    )
+    print("✅ Evaluation completed successfully!")
+
+    print("=" * 100)
+    print("=" * 100)
+
     # TrainingArguments
     training_args = TrainingArguments(
         # ---
@@ -356,11 +411,11 @@ def main():
         logging_dir="./logs",
         logging_steps=50,
         lr_scheduler_type="cosine",
-        optim="adamw_torch", # "adamw_bnb_8bit",            # Adam 状態を 75% 圧縮  #! ZeROだと無効化されるっぽい
+        optim="adamw_torch",  # "adamw_bnb_8bit",            # Adam 状態を 75% 圧縮  #! ZeROだと無効化されるっぽい
         save_strategy="epoch",
         eval_strategy="epoch",
         fp16=True,
-        fp16_full_eval=True,                # eval も半精度(2023.05.18)
+        fp16_full_eval=True,  # eval も半精度(2023.05.18)
         #!
         per_device_eval_batch_size=1,
         eval_accumulation_steps=1,
@@ -370,7 +425,7 @@ def main():
         # report_to=None if args.report_to == "none" else args.report_to,
         run_name=args.run_name,
         save_total_limit=args.epochs,  # 2
-        ddp_find_unused_parameters=False, #True,  #! もしかしたら消した方がいいかも
+        ddp_find_unused_parameters=False,  # True,  #! もしかしたら消した方がいいかも
         # ddp_find_unused_parameters=False if ddp else None,
         load_best_model_at_end=False,
         # deepspeed="ds_config_zero3.json",   #! 追加(ZeRO) -> ymalでCMDから指定したので再削除(2025.05.18)
@@ -433,6 +488,7 @@ def main():
         collate_fn=custom_collate_fn,
         device=model.device,
         batch_size=args.micro_batch_size,
+        log=True,
     )
     print("✅ Evaluation completed successfully!")
 
