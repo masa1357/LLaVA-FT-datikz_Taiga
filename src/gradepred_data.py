@@ -445,6 +445,8 @@ def collate_fn(
     question = "".join(Q_TEXT[q] for q in question_filter)
 
     if testcase:
+        preamble = ("")
+    else:
         preamble = (
             "あなたは大学の教授であり，学生の成績を決定する役割を担っています。"
             "以下に示す学生の講義後アンケートを読み，成績を A, B, C, D, F のいずれかに分類してください。\n"
@@ -454,8 +456,6 @@ def collate_fn(
             "上記を踏まえ，出力には A/B/C/D/F のいずれか **1 文字のみ** を返してください。\n"
             "アンケート内容："
         )
-    else:
-        preamble = ("")
 
 
     # ----- 入力文とターゲットを作成 -----
