@@ -30,70 +30,33 @@ def custom_compute_metrics(res: EvalPrediction) -> Dict:
 
 
 def main():
-    # torchのバージョンを確認
-    print(f"[info] torch version: {torch.__version__}")
-    print(f"[info] torch cuda version: {torch.version.cuda}")
 
     #================================================================
     # パラメータの取得
     #================================================================
 
-    parser = argparse.ArgumentParser(
-        description="Fine-tune LLama with LoRA on Reflection dataset"
-    )
+    parser = argparse.ArgumentParser(description="Fine-tune LLama with LoRA on Reflection dataset")
 
     # モデルや出力に関する設定
-    parser.add_argument(
-        "--base_model",
-        type=str,
-        default="elyza/Llama-3-ELYZA-JP-8B",
-        help="Base model ID",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="./outputs/lora-elyza-reflection",
-        help="Directory to save LoRA-tuned checkpoints",
-    )
+    parser.add_argument("--base_model",     type = str, default = "elyza/Llama-3-ELYZA-JP-8B",      help = "Base model ID")
+    parser.add_argument("--output_dir",     type = str, default = "./outputs/lora-elyza-reflection",help = "Directory to save LoRA-tuned checkpoints")
 
     # LoRAパラメータ
-    parser.add_argument("--lora_r", type=int, default=8, help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA alpha")
-    parser.add_argument("--lora_dropout", type=float, default=0.1, help="LoRA dropout")
+    parser.add_argument("--lora_r",         type = int,    default = 8,   help = "LoRA rank")
+    parser.add_argument("--lora_alpha",     type = int,    default = 16,  help = "LoRA alpha")
+    parser.add_argument("--lora_dropout",   type = float,  default = 0.1, help = "LoRA dropout")
 
     # データ・学習設定
-    parser.add_argument("--max_words", type=int, default=4096, help="data max_words")
-    parser.add_argument(
-        "--epochs", type=int, default=3, help="Number of training epochs"
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=1,
-        help="Global batch size (across all devices)",
-    )
-    parser.add_argument(
-        "--micro_batch_size", type=int, default=1, help="Batch size per device"
-    )
+    parser.add_argument("--max_words",          type = int, default = 4096, help = "data max_words")
+    parser.add_argument("--epochs",             type = int, default = 3,    help = "Number of training epochs")
+    parser.add_argument("--batch_size",         type = int, default = 1,    help = "Global batch size (across all devices)")
+    parser.add_argument("--micro_batch_size",   type = int, default=1,      help = "Batch size per device")
 
     # ログ出力設定
-    parser.add_argument(
-        "--report_to",
-        type=str,
-        default="none",
-        choices=["wandb", "tensorboard", "none"],
-        help="Reporting backend for logging",
-    )
-    parser.add_argument(
-        "--run_name",
-        type=str,
-        default="lora-elyza-reflection_test",
-        help="Run name for experiment tracking",
-    )
+    parser.add_argument("--report_to",      type=str,   default="none", choices=["wandb", "tensorboard", "none"],   help="Reporting backend for logging")
+    parser.add_argument("--run_name",       type=str,   default="lora-elyza-reflection_test",                       help="Run name for experiment tracking")
 
     args = parser.parse_args()
-
-    # Set random seed for reproducibility
     set_seed(42)
 
     #================================================================
@@ -103,7 +66,7 @@ def main():
     model, tokenizer = load_model(args.base_model, if_ZeRO=True)
     summary(model)
 
-        # データセットを読み込む
+    # データセットを読み込む
     dataset_path = "./data/"
 
     train_dataset = GradePredictionDataset(
@@ -146,19 +109,19 @@ def main():
 
     # ① LoRA設定
     peft_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
-        target_modules=[
+        r               = args.lora_r,
+        lora_alpha      = args.lora_alpha,
+        lora_dropout    = args.lora_dropout,
+        bias            = "none",
+        task_type       = TaskType.CAUSAL_LM,
+        target_modules  = [
             # "q_proj",
             # "k_proj",
             # "v_proj",
-            # "o_proj",       # Self-Attention系
+            # "o_proj",         # Self-Attention系
             "gate_proj",
             "up_proj",
-            "down_proj",  # MLP（FFN）系
+            "down_proj",        # MLP（FFN）系
         ],
     )
 
@@ -176,8 +139,7 @@ def main():
     # LoRA 適用済み（前段）
     for name, param in model.named_parameters():
         if any(module_name in name for module_name in full_finetune_modules):
-            param.requires_grad = False  #! True -> 変更
-            # param.data = param.data.to(torch.float32)
+            param.requires_grad = False
             param.data = param.data.to(torch.float16)
 
     print("✅ LoRA has been applied.")
@@ -185,7 +147,7 @@ def main():
         f"✅ The following modules are fully finetuned: {', '.join(full_finetune_modules)}"
     )
 
-    model.gradient_checkpointing_enable()  #! 追加::model.gradient_checkpointing_enable() を LoRA 適用後に呼ぶと 20–30 % 追加節約
+    model.gradient_checkpointing_enable()
     # if local_rank == 0:
     #     model.print_trainable_parameters()
     #     summary(model, depth=2)
@@ -225,16 +187,55 @@ def main():
 
 
     trainer = Trainer(
-        model=model,
-        tokenizer=tokenizer,
-        data_collator=custom_collate_fn,
-        compute_metrics=custom_compute_metrics,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
+        model           = model,
+        tokenizer       = tokenizer,
+        data_collator   = custom_collate_fn,
+        compute_metrics = custom_compute_metrics,
+        args            = training_args,
+        train_dataset   = train_dataset,
+        eval_dataset    = eval_dataset,
     )
 
+    print("[info] Trainer instance has been created.")
+    print(
+        f"[info] Trainer is set with model: {type(model).__name__}, train dataset size: {len(train_dataset)}, eval dataset size: {len(eval_dataset)}"
+    )
+
+    #================================================================
+    # 訓練前推論
+    #================================================================
+    print(" Start Evaluation before training...")
+    pred_result = trainer.predict(test_dataset)
+    print("✅️ Visualize sample answers")
+    for i in range(5):
+        print(f"sample {i}\t: ")
+        print(f"input sentence\t: \n\t{pred_result["input_sentence"][i]}")
+        print(f"predict sentence\t: \n\t{pred_result["output_sentence"][i]}")
+        
+    metrics = evaluate(pred_result, test_dataset)
+    print(f"Metrics\t:\nMoverScore\t: {metrics["moverscore"]}\n")
+    
+    #================================================================
+    # 訓練
+    #================================================================
+    print("🔄 Start training...")
+    trainer.train()
+    print("✅ Model training has been completed successfully!")
+
+    #================================================================
+    # 訓練後推論
+    #================================================================
+    print(" Start Evaluation after training...")
+    pred_result = trainer.predict(test_dataset)
+    print("✅️ Visualize sample answers")
+    for i in range(5):
+        print(f"sample {i}\t: ")
+        print(f"input sentence\t: \n\t{pred_result["input_sentence"][i]}")
+        print(f"predict sentence\t: \n\t{pred_result["output_sentence"][i]}")
+        
+    metrics = evaluate(pred_result, test_dataset)
+    print(f"Metrics\t:\nMoverScore\t: {metrics["moverscore"]}\n")
+    
 
 
 
