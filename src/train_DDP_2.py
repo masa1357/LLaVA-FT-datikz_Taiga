@@ -17,16 +17,68 @@ BYTES_PER_PARAM = {
     torch.int8: 1,
 }
 
-def train():
-    pass
+def evaluate(pred_result: Dict[str, List[str]], test_dataset) -> Dict[str, float]:
+    # 入力: pred_result["output_sentence"], test_dataset["labels"]
+    preds: List[str] = pred_result["output_sentence"]
+    refs: List[str] = test_dataset["labels"]  # reference sentences
 
-def evaluate():
-    pass
+    # Metrics #1    : BLEU (sacrebleu)
+    bleu = sacrebleu.corpus_bleu(preds, [refs]).score
+
+    # Metrics #2    : MoverScore
+    idf_dict_hyp = get_idf_dict(preds)
+    idf_dict_ref = get_idf_dict(refs)
+    moverscore_list = word_mover_score(
+        refs, preds,
+        idf_dict_ref, idf_dict_hyp,
+        stop_words=[],
+        n_gram=1,
+        remove_subwords=True,
+        batch_size=16
+    )
+    moverscore = sum(moverscore_list) / len(moverscore_list)
+
+    return {
+        "bleu": round(bleu, 4),
+        "moverscore": round(moverscore, 4)
+    }
 
 def custom_compute_metrics(res: EvalPrediction) -> Dict:
-    pred = res.predictions.argmax(axis=1)
-    target = res.label_ids
-    pass
+    pred_ids  = res.predictions
+    label_ids = res.label_ids
+
+    # logits → ids (generate=False 時の保険) 
+    if pred_ids.ndim == 3 : # (bs, seq, vocab)
+        pred_ids = pred_ids.argmax(-1)
+
+    # -100 を PAD に置換
+    label_ids[label_ids == -100] = tokenizer.pad_token_id
+
+    preds  = tokenizer.batch_decode(preds,   skip_special_tokens=True)
+    labels = tokenizer.batch_decode(labels,  skip_special_tokens=True)
+
+    postprocess = lambda seq: [s.strip() for s in seq]
+    preds   = postprocess(preds)
+    labels  = postprocess(labels)
+    
+    # ① n-gram 系
+    bleu_refs = [[l] for l in labels]
+    bleu_res  = bleu.compute(predictions=preds,   references=bleu_refs)                 # :contentReference[oaicite:5]{index=5}
+    rouge_res = rouge.compute(predictions=preds,  references=labels, use_stemmer=True)  # :contentReference[oaicite:6]{index=6}
+    
+    # ② 埋め込み類似系    
+    bert_res  = bertscore.compute(predictions=preds, references=labels, lang="ja")      # :contentReference[oaicite:7]{index=7}
+    mover_res = mover.compute(predictions=preds,     references=labels)                 # :contentReference[oaicite:8]{index=8}
+
+    return {
+        "bleu":        bleu_res["bleu"],
+        "rouge1":      rouge_res["rouge1"],
+        "rouge2":      rouge_res["rouge2"],
+        "rougeL":      rouge_res["rougeL"],
+        "bertscore_f1": float(np.mean(bert_res["f1"])),
+        "moverscore":   float(np.mean(mover_res["score"])),
+    }
+
 
 
 def main():
@@ -208,7 +260,7 @@ def main():
     pred_result = trainer.predict(test_dataset)
     print("✅️ Visualize sample answers")
     for i in range(5):
-        print(f"sample {i}\t: ")
+        print(f"sample {i}\t:")
         print(f"input sentence\t: \n\t{pred_result["input_sentence"][i]}")
         print(f"predict sentence\t: \n\t{pred_result["output_sentence"][i]}")
         
