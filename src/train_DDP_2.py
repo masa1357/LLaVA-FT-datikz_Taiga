@@ -1,6 +1,31 @@
+# ================ 標準ライブラリ ================
+import os
+import argparse
+import logging
+from functools import partial
+from typing import Dict, List
 
+# ================ サードパーティ ================
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+from torchinfo import summary
 
+from dotenv import load_dotenv                # .env 読み込み
+import sacrebleu                              # BLEU
+import evaluate                               # ROUGE / BERTScore / MoverScore ラッパ
+from moverscore import word_mover_score, get_idf_dict
 
+from transformers import (
+    Trainer,
+    TrainingArguments,
+    set_seed,
+)
+from peft import LoraConfig, get_peft_model, TaskType
+
+# ================ プロジェクト内（ローカル） ================
+from util import load_model
+from gradepred_data import GradePredictionDataset, collate_fn
 
 # -------- environment setting --------
 load_dotenv()
@@ -54,8 +79,8 @@ def custom_compute_metrics(res: EvalPrediction) -> Dict:
     # -100 を PAD に置換
     label_ids[label_ids == -100] = tokenizer.pad_token_id
 
-    preds  = tokenizer.batch_decode(preds,   skip_special_tokens=True)
-    labels = tokenizer.batch_decode(labels,  skip_special_tokens=True)
+    preds  = tokenizer.batch_decode(pred_ids,   skip_special_tokens=True)
+    labels = tokenizer.batch_decode(label_ids,  skip_special_tokens=True)
 
     postprocess = lambda seq: [s.strip() for s in seq]
     preds   = postprocess(preds)
@@ -188,11 +213,11 @@ def main():
 
     print("🔧 Applying LoRA and enabling full finetune modules...")
 
-    # LoRA 適用済み（前段）
-    for name, param in model.named_parameters():
-        if any(module_name in name for module_name in full_finetune_modules):
-            param.requires_grad = False
-            param.data = param.data.to(torch.float16)
+    # LoRA 適用済み（前段） -> ZeRO 3 でエラーが発生する可能性あり
+    # for name, param in model.named_parameters():
+    #     if any(module_name in name for module_name in full_finetune_modules):
+    #         param.requires_grad = False
+    #         param.data = param.data.to(torch.float16)
 
     print("✅ LoRA has been applied.")
     print(
@@ -257,14 +282,14 @@ def main():
     # 訓練前推論
     #================================================================
     print(" Start Evaluation before training...")
-    pred_result = trainer.predict(test_dataset)
+    pred_result = trainer.predict(eval_dataset)
     print("✅️ Visualize sample answers")
     for i in range(5):
         print(f"sample {i}\t:")
         print(f"input sentence\t: \n\t{pred_result["input_sentence"][i]}")
         print(f"predict sentence\t: \n\t{pred_result["output_sentence"][i]}")
         
-    metrics = evaluate(pred_result, test_dataset)
+    metrics = evaluate(pred_result, eval_dataset)
     print(f"Metrics\t:\nMoverScore\t: {metrics["moverscore"]}\n")
     
     #================================================================
@@ -278,14 +303,14 @@ def main():
     # 訓練後推論
     #================================================================
     print(" Start Evaluation after training...")
-    pred_result = trainer.predict(test_dataset)
+    pred_result = trainer.predict(eval_dataset)
     print("✅️ Visualize sample answers")
     for i in range(5):
         print(f"sample {i}\t: ")
         print(f"input sentence\t: \n\t{pred_result["input_sentence"][i]}")
         print(f"predict sentence\t: \n\t{pred_result["output_sentence"][i]}")
         
-    metrics = evaluate(pred_result, test_dataset)
+    metrics = evaluate(pred_result, eval_dataset)
     print(f"Metrics\t:\nMoverScore\t: {metrics["moverscore"]}\n")
     
 

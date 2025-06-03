@@ -457,7 +457,6 @@ def collate_fn(
             "アンケート内容："
         )
 
-
     # ----- 入力文とターゲットを作成 -----
     sources, targets = [], []
     for sample in batch:
@@ -467,7 +466,12 @@ def collate_fn(
         # Llama-3 のチャット書式: <s>[INST] system + user [/INST] assistant
         #   - BOS (<s>) は tokenizer.bos_token で自動付与されるので add_special_tokens=True で任せる
         prompt = f"[INST] {preamble}\n\n{survey}\n[/INST]\n"
-        answer = f" {grade}"  # 先頭スペースは BPE で単語境界を作るため
+
+        # Attentionの性質を考慮し，文章として生成することで推論精度を担保する
+        if testcase:
+            answer = f" この問題の答えは、{grade}です。"        # 先頭スペースは BPE で単語境界を作るため
+        else:
+            answer = f" この学生の成績は、\"{grade}\"です。"    # 先頭スペースは BPE で単語境界を作るため
 
         sources.append(prompt)
         targets.append(answer)
