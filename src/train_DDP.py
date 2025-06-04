@@ -18,11 +18,12 @@ from torchinfo import summary
 from functools import partial
 from peft import LoraConfig, TaskType, get_peft_model
 import json
-
+import numpy as np
+from transformers import EvalPrediction
 from util import load_model
 from gradepred_data import GradePredictionDataset, collate_fn
 from torch.nn.utils.rnn import pad_sequence
-
+import evaluate
 # 使用VRAM数の推定
 
 # from accelerate import estimate_memory
@@ -42,53 +43,6 @@ BYTES_PER_PARAM = {
     torch.int8: 1,
 }
 
-
-def estimate_vram_cost(
-    model: torch.nn.Module,
-    batch_size: int,
-    seq_len: int,
-    dtype=torch.float16,
-    optim_factor: float = 4,  # AdamW (fp32) なら 4 (= 1重み + 1勾配 + 2状態)
-    act_factor: float = 1.3,  # 活性の再現用オーバーヘッド (経験則)
-) -> dict:
-    """
-    LLM 1 GPU あたりの VRAM 使用量 (推定) を返す
-
-    Returns
-    -------
-    dict : {
-        "params_MB": …,
-        "grads_MB" : …,
-        "optimizer_MB": …,
-        "activations_MB": …,
-        "total_MB": …,
-    }
-    """
-    bytes_per_param = BYTES_PER_PARAM[dtype]
-    # ① パラメータ数
-    param_count = sum(p.numel() for p in model.parameters())
-    params_MB = param_count * bytes_per_param / (1024**2)
-
-    # ② 勾配（パラメータと同サイズ／同 dtype）
-    grads_MB = params_MB
-
-    # ③ Optimizer 状態 (AdamW = fp32 × 2 倍)
-    optimizer_MB = params_MB * (optim_factor - 2)  # 勾配+重みは除外済
-
-    # ④ アクティベーション (おおよそ batch*seq*hidden*4bytes×layers×係数)
-    hidden = model.config.hidden_size
-    layers = model.config.num_hidden_layers
-    acts_numel = batch_size * seq_len * hidden * layers * act_factor
-    activations_MB = acts_numel * bytes_per_param / (1024**2)
-
-    total_MB = params_MB + grads_MB + optimizer_MB + activations_MB
-    return {
-        "params_MB": params_MB,
-        "grads_MB": grads_MB,
-        "optimizer_MB": optimizer_MB,
-        "activations_MB": activations_MB,
-        "total_MB": total_MB,
-    }
 
 
 def evaluate_generate(
@@ -149,6 +103,7 @@ def evaluate_generate(
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
+                synced_gpus=False,
             )
 
             # ③ 生成部だけ取り出して decode
@@ -161,7 +116,7 @@ def evaluate_generate(
 
             #! ───── ③ 生成部分だけを decode ─────
             preds = [
-                tokenizer.decode(seq[p:], skip_special_tokens=True).strip()[:1]
+                tokenizer.decode(seq[p:], skip_special_tokens=True).strip()[:50]
                 for seq, p in zip(gen, prompt_len)
             ]
             #! ───── ③ 生成部分だけを decode ─────
@@ -200,6 +155,61 @@ def evaluate_generate(
     acc = correct / total
     print(f"[eval] accuracy = {acc:.4f} ({correct}/{total})")
     return acc
+
+
+def compute_exact_match_and_f1(predictions, labels):
+    """
+    Args:
+        predictions: torch.Tensor | np.ndarray
+            - logits (batch, num_classes) か
+            - 既に argmax 済みの (batch,) いずれか
+        labels: 同上  (batch,)
+    Returns:
+        dict: {"exact_match": float, "precision": float, "recall": float, "f1": float}
+    """
+
+    # ---- 1. Tensor → ndarray、logits → argmax ----------------------------
+    if isinstance(predictions, torch.Tensor):
+        predictions = predictions.detach().cpu()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.detach().cpu()
+
+    if predictions.ndim > 1:                # (batch, num_classes) のとき
+        predictions = predictions.argmax(-1)
+
+    predictions = np.asarray(predictions).reshape(-1)  # (batch,)
+    labels       = np.asarray(labels).reshape(-1)
+
+    # ---- 2. メトリクス計算 ----------------------------------------------
+    exact_match = float((predictions == labels).mean())
+
+    # 単語分類が 1 クラス問題なら precision/recall = exact_match
+    # 多クラスで macro F1 を取りたい場合は sklearn を使う方が楽
+    precision = exact_match
+    recall    = exact_match
+    f1        = exact_match
+
+    return {
+        "exact_match": exact_match,
+        "precision":   precision,
+        "recall":      recall,
+        "f1":          f1,
+    }
+
+
+# Trainer に渡す compute_metrics 関数
+def compute_metrics_for_single_word_task(eval_pred: EvalPrediction):
+    """
+    Trainer の compute_metrics 引数に渡す関数。
+    単一単語出力タスクの評価メトリクス（Exact Match, F1-score）を計算します。
+    """
+    predictions = eval_pred.predictions # ロジットまたは予測ID
+    labels = eval_pred.label_ids      # 正解ラベルID
+
+    # 上記で定義したカスタム関数を呼び出す
+    metrics = compute_exact_match_and_f1(predictions, labels)
+
+    return metrics
 
 
 # -------- main function --------
@@ -325,6 +335,35 @@ def main():
         f"[info] custom_collate_fn initialized with processor: {type(tokenizer).__name__}"
     )
 
+    # collate_fn の確認
+    print("[info] Checking custom_collate_fn with a sample batch...")
+    sample_batch = train_dataset[:2]  # 最初の2サンプルを取得
+    collated_batch = custom_collate_fn(sample_batch)
+    
+    print("[info] Sample collated batch(decoded):")
+    # ── ① 入力文の decode ─────────────────────────────
+    decoded_inputs = tokenizer.batch_decode(
+        collated_batch["input_ids"][:5],          # 先頭 5 個
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )
+
+    # ── ② labels の -100 を pad_token_id に置換してから decode ──
+    labels_fixed = collated_batch["labels"][:5].clone()
+    labels_fixed[labels_fixed == -100] = tokenizer.pad_token_id
+
+    decoded_labels = tokenizer.batch_decode(
+        labels_fixed,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )
+
+    # ── ③ 表示 ───────────────────────────────────────
+    for i, (inp, lab) in enumerate(zip(decoded_inputs, decoded_labels)):
+        print(f"[{i}] input : {inp}")
+        print(f"    label : {lab}")
+        
+
     # LoRA設定
     peft_config = LoraConfig(
         r=args.lora_r,
@@ -380,23 +419,6 @@ def main():
         if param.requires_grad:
             print(name, param.shape, param.dtype)
 
-    print("=" * 100)
-    print("=" * 100)
-
-    print("🔍  Running evaluation on vanilla model …")
-    evaluate_generate(
-        model=model,
-        tokenizer=tokenizer,
-        dataset=eval_dataset,
-        collate_fn=custom_collate_fn,
-        device=model.device,
-        batch_size=args.micro_batch_size,
-        log=False,
-    )
-    print("✅ Evaluation completed successfully!")
-
-    print("=" * 100)
-    print("=" * 100)
 
     # TrainingArguments
     training_args = TrainingArguments(
@@ -441,46 +463,19 @@ def main():
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         data_collator=custom_collate_fn,
+        compute_metrics=compute_metrics_for_single_word_task,
     )
 
     print("[info] Trainer instance has been created.")
     print(
         f"[info] Trainer is set with model: {type(model).__name__}, train dataset size: {len(train_dataset)}, eval dataset size: {len(eval_dataset)}"
     )
+    
+    print("=" * 100)
+    print("=" * 100)
 
-    # モデル読込直後
-    stats = estimate_vram_cost(
-        model,
-        batch_size=args.micro_batch_size,
-        seq_len=args.max_words,
-        dtype=torch.float16,
-    )
-    print("[memory-estimate]")
-    for k, v in stats.items():
-        print(f"{k:15}: {v:8.1f} MB")
-
-    # 例: A6000-ada (48 GB) なら余裕 48 GB (= 49,152 MB) が上限
-    if stats["total_MB"] > 48 * 1024:
-        print(
-            "⚠️ Estimated VRAM exceeded. Please consider switching to Model Parallel/FSDP etc."
-        )
-
-    print("🔄 Starting training...")
-    trainer.train()
-    print("✅ Model training has been completed successfully!")
-
-    ## rank 0のみが保存処理
-    # if is_main_process():
-    #    print("✅ Training finished. Starting model saving...")
-    #    torch.distributed.barrier()  # 全rankの同期を明示的にとる
-    #    merge_lora_and_save(model, processor, args.merged_output_dir)
-    #    print("✅ Model saved successfully.")
-
-    print("🎉 All steps completed successfully!")
-
-    # evaluate
-    # --- train() の直後に呼ぶ ---
-    print("🔍  Running evaluation on validation split …")
+    print("🔍  Running evaluation on vanilla model …")
+    # before_train_results = trainer.evaluate()
     evaluate_generate(
         model=model,
         tokenizer=tokenizer,
@@ -488,9 +483,54 @@ def main():
         collate_fn=custom_collate_fn,
         device=model.device,
         batch_size=args.micro_batch_size,
-        log=True,
+        log=True
     )
     print("✅ Evaluation completed successfully!")
+    # print("Evaluation result before training:", before_train_results)
+    # torch.cuda.empty_cache() 
+    print("=" * 100)
+    print("=" * 100)
+
+    print("🔄 Starting training...")
+    trainer.train()
+    print("✅ Model training has been completed successfully!")
+
+    # rank 0のみが保存処理
+    if is_main_process():
+       print("✅ Training finished. Starting model saving...")
+       torch.distributed.barrier()  # 全rankの同期を明示的にとる
+       merge_lora_and_save(model, processor, args.merged_output_dir)
+       print("✅ Model saved successfully.")
+
+    print("🎉 All steps completed successfully!")
+
+    # evaluate
+    # --- train() の直後に呼ぶ ---
+    print("🔍  Running evaluation on validation split …")
+    # evaluate_generate(
+    #     model=model,
+    #     tokenizer=tokenizer,
+    #     dataset=eval_dataset,
+    #     collate_fn=custom_collate_fn,
+    #     device=model.device,
+    #     batch_size=args.micro_batch_size,
+    #     log=True,
+    # )
+    
+    
+    # eval_results = trainer.evaluate()
+    # print("✅ Evaluation completed successfully!")
+    # print("Evaluation result:", eval_results)
+    evaluate_generate(
+        model=model,
+        tokenizer=tokenizer,
+        dataset=eval_dataset,
+        collate_fn=custom_collate_fn,
+        device=model.device,
+        batch_size=args.micro_batch_size,
+        log=True
+    )
+
 
 
 if __name__ == "__main__":

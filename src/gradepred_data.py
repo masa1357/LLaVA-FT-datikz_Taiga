@@ -106,8 +106,8 @@ class GradePredictionDataset(Dataset):
                 )
             self.dataset = dummy_samples
 
-            # datasetsの要素数を削減 (500sample)
-            self.dataset = self.dataset[:500]
+            # datasetsの要素数を削減 (100sample)
+            self.dataset = self.dataset[:100]
 
         else:
             # ----------------- データ読込 -----------------
@@ -445,7 +445,7 @@ def collate_fn(
     question = "".join(Q_TEXT[q] for q in question_filter)
 
     if testcase:
-        preamble = ("")
+        preamble = ("以下に示す問題に対して，適切な回答を出力してください．ここで，回答は1単語である必要があります．\n")
     else:
         preamble = (
             "あなたは大学の教授であり，学生の成績を決定する役割を担っています。"

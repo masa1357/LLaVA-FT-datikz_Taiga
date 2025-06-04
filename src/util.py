@@ -48,3 +48,52 @@ def load_model(base_model: str = "elyza/Llama-3-ELYZA-JP-8B", use_fast: bool = T
 
     print("✅ Model and processor loaded successfully!")
     return model, tokenizer
+
+
+
+def estimate_vram_cost(
+    model: torch.nn.Module,
+    batch_size: int,
+    seq_len: int,
+    dtype=torch.float16,
+    optim_factor: float = 4,  # AdamW (fp32) なら 4 (= 1重み + 1勾配 + 2状態)
+    act_factor: float = 1.3,  # 活性の再現用オーバーヘッド (経験則)
+) -> dict:
+    """
+    LLM 1 GPU あたりの VRAM 使用量 (推定) を返す
+
+    Returns
+    -------
+    dict : {
+        "params_MB": int
+        "grads_MB" : int
+        "optimizer_MB": …,
+        "activations_MB": …,
+        "total_MB": …,
+    }
+    """
+    bytes_per_param = BYTES_PER_PARAM[dtype]
+    # ① パラメータ数
+    param_count = sum(p.numel() for p in model.parameters())
+    params_MB = param_count * bytes_per_param / (1024**2)
+
+    # ② 勾配（パラメータと同サイズ／同 dtype）
+    grads_MB = params_MB
+
+    # ③ Optimizer 状態 (AdamW = fp32 × 2 倍)
+    optimizer_MB = params_MB * (optim_factor - 2)  # 勾配+重みは除外済
+
+    # ④ アクティベーション (おおよそ batch*seq*hidden*4bytes×layers×係数)
+    hidden = model.config.hidden_size
+    layers = model.config.num_hidden_layers
+    acts_numel = batch_size * seq_len * hidden * layers * act_factor
+    activations_MB = acts_numel * bytes_per_param / (1024**2)
+
+    total_MB = params_MB + grads_MB + optimizer_MB + activations_MB
+    return {
+        "params_MB": params_MB,
+        "grads_MB": grads_MB,
+        "optimizer_MB": optimizer_MB,
+        "activations_MB": activations_MB,
+        "total_MB": total_MB,
+    }

@@ -13,13 +13,12 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         CUDA_VISIBLE_DEVICES=0,1,2,3 \
         accelerate launch \
         --config_file ds_zero3.yaml \
-        --main_process_port 29501 \
         src/train_DDP.py \
         --output_dir ./outputs/llama3-elyza-8b-lora \
-        --epochs 5 \
+        --epochs 3 \
         --batch_size 4 \
         --run_name llama3-elyza-8b-lora_test \
-        --max_words 4096
+        --max_words 2048
         "
 
 echo "Running command at $(date):" | tee "$LOGFILE"
