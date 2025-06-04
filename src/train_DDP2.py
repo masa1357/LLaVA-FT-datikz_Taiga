@@ -331,14 +331,23 @@ def main():
     logger.info(" Start Evaluation before training...")
     trainer.data_collator = eval_collator
     pred_result = trainer.predict(eval_dataset)
+    logger.debug(f"pred_result elements\t:{pred_result.keys()}")
+    pred_text = tokenizer.batch_decode(
+        pred_result.predictions, skip_special_tokens=True
+    )
+    labels_text = tokenizer.batch_decode(
+        pred_result.label_ids, skip_special_tokens=True
+    )
+
     logger.info("✅️ Visualize sample answers")
     for i in range(5):
-        logger.info(f"sample {i}\t:")
-        logger.info(f"input sentence\t: \n\t{pred_result["input_sentence"][i]}")
-        logger.info(f"predict sentence\t: \n\t{pred_result["output_sentence"][i]}")
-        
+        logger.info(f"Sample {i}\t: ")
+        logger.info(f"Predict\t: {pred_text[i]}")
+        logger.info(f"Target\t: {labels_text[i]}")
+
+
     metrics = evaluate(pred_result, eval_dataset)
-    logger.info(f"Metrics\t:\nMoverScore\t: {metrics["moverscore"]}\n")
+    logger.info(f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\n")
     
     #================================================================
     # 訓練
@@ -354,14 +363,23 @@ def main():
     logger.info(" Start Evaluation after training...")
     trainer.data_collator = eval_collator
     pred_result = trainer.predict(eval_dataset)
+    logger.debug(f"pred_result elements\t:{pred_result.keys()}")
+    pred_text = tokenizer.batch_decode(
+        pred_result.predictions, skip_special_tokens=True
+    )
+    labels_text = tokenizer.batch_decode(
+        pred_result.label_ids, skip_special_tokens=True
+    )
+
+
     logger.info("✅️ Visualize sample answers")
     for i in range(5):
-        logger.info(f"sample {i}\t: ")
-        logger.info(f"input sentence\t: \n\t{pred_result["input_sentence"][i]}")
-        logger.info(f"predict sentence\t: \n\t{pred_result["output_sentence"][i]}")
+        logger.info(f"Sample {i}\t: ")
+        logger.info(f"Predict\t: {pred_text[i]}")
+        logger.info(f"Target\t: {labels_text[i]}")
         
     metrics = evaluate(pred_result, eval_dataset)
-    logger.info(f"Metrics\t:\nMoverScore\t: {metrics["moverscore"]}\n")
+    logger.info(f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\n")
     
 
 
