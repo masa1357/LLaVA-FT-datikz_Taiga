@@ -424,30 +424,55 @@ class GradePredictionDataset(Dataset):
         # return result
 
 
-def collate_fn(
-    batch,
-    tokenizer,
-    max_tokens: int = 4096,
-    question_filter: list[int] | None = [1, 2, 3, 4, 5],
-    logger: logging.Logger | None = None,
-    include_target=True,
-    testcase=False,
-):
-    logger = logger or logging.getLogger(__name__)
+class GradePredictionCollator:
+    """
+    GradePredictionDataset 用の collate_fn を作成
+    huggingface Trainer の DataCollator 互換のインタフェース
+    huggingface>DataCollatorForSeq2Seq
+    十分条件；
+    features    : Dict[
 
-    Q_TEXT = {
-        1: "Q1:今日の内容を自分なりの言葉で説明してみてください\n",
-        2: "Q2:今日の内容で、分かったこと・できたことを書いてください\n",
-        3: "Q3:今日の内容で、分からなかったこと・できなかったことを書いてください\n",
-        4: "Q4:質問があれば書いてください\n",
-        5: "Q5:今日の授業の感想や反省を書いてください\n",
-    }
-    question = "".join(Q_TEXT[q] for q in question_filter)
+    ]
+    return      : Dict[
+        "input_ids": torch.Tensor,
+        "attention_mask": torch.Tensor,
+        "labels": torch.Tensor,
+    ]
+    """
 
-    if testcase:
-        preamble = ("以下に示す問題に対して，適切な回答を出力してください．ここで，回答は1単語である必要があります．\n")
-    else:
-        preamble = (
+    def __init__(
+        self,
+        tokenizer,
+        max_tokens: int = 4096,
+        logger: logging.Logger | None = None,
+        question_filter: list[int] | None = [1, 2, 3, 4, 5],
+        include_target: bool = True,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        tokenizer : transformers.PreTrainedTokenizer
+            トークナイザ
+        max_tokens : int, optional
+            最大トークン数（デフォルトは4096）
+        logger : logging.Logger, optional
+            ロガー（デフォルトはNone）
+        """
+        self.tokenizer = tokenizer
+        self.max_tokens = max_tokens
+        self.include_target = include_target
+        self.logger = logger or logging.getLogger(__name__)
+
+        Q_TEXT = {
+            1: "Q1:今日の内容を自分なりの言葉で説明してみてください\n",
+            2: "Q2:今日の内容で、分かったこと・できたことを書いてください\n",
+            3: "Q3:今日の内容で、分からなかったこと・できなかったことを書いてください\n",
+            4: "Q4:質問があれば書いてください\n",
+            5: "Q5:今日の授業の感想や反省を書いてください\n",
+        }
+        question = "".join(Q_TEXT[q] for q in question_filter)
+
+        self.preamble = (
             "あなたは大学の教授であり，学生の成績を決定する役割を担っています。"
             "以下に示す学生の講義後アンケートを読み，成績を A, B, C, D, F のいずれかに分類してください。\n"
             "L は講義回，Q は質問番号を示します（例: L1-Q1）。\n"
@@ -457,66 +482,185 @@ def collate_fn(
             "アンケート内容："
         )
 
+    def __call__(self, features: Iterable[dict[str, Any]]) -> dict[str, torch.Tensor]:
+        """
+        LLMに入力するため，データセットの整形，トークナイズを行う
 
-    # ----- 入力文とターゲットを作成 -----
-    sources, targets = [], []
-    for sample in batch:
-        survey = sample["input_text"]
-        grade = sample["grades"]  # 'A'~'F' (str)
-
-        # Llama-3 のチャット書式: <s>[INST] system + user [/INST] assistant
-        #   - BOS (<s>) は tokenizer.bos_token で自動付与されるので add_special_tokens=True で任せる
-        prompt = f"[INST] {preamble}\n\n{survey}\n[/INST]\n"
-        answer = f" {grade}"  # 先頭スペースは BPE で単語境界を作るため
-
-        sources.append(prompt)
-        targets.append(answer)
-
-    logger.info("Collate: %d samples, max_tokens=%d", len(batch), max_tokens)
-    logger.debug("prompt sample:\n%s", sources[0][:500])
-
-    # ----- トークナイズ＆教師ラベル作成 -----
-    input_ids, label_ids, attn_masks = [], [], []
-    for src, tgt in zip(sources, targets):
-        # add_special_tokens=False → 自前で eos を足す
-        prompt_ids = tokenizer.encode(src, add_special_tokens=False)
-        target_ids = tokenizer.encode(tgt, add_special_tokens=False) + [
-            tokenizer.eos_token_id
+        Parameters
+        ----------
+        features : Iterable[dict[str, Any]]
+            データセットのサンプル（辞書型）のイテラブル
+            {
+                "userid": str,      # ユーザID
+                "input_text": str,  # アンケート内容
+                "grades": str,      # 成績（A, B, C, D, F）
+                "labels": int,      # ラベル（0~4）
+            }
+        Returns
+        -------
+        Dict[str, torch.Tensor]
+            トークナイズされた入力データとラベル
+            {
+                "input_ids": torch.Tensor,
+                "attention_mask": torch.Tensor,
+                "labels": torch.Tensor,
+            }
+        """
+        prompts = [
+            f"[INST] {self.preamble}\n\n{ex['input_text']}\n[/INST]\n"
+            for ex in features
         ]
+        grades = [ex["grades"] for ex in features]
+        tgt_str = (f' この学生の成績は、"{g}"です。' for g in grades)
 
-        # 長さ制御（truncate は “プロンプト側” を先に削る）
-        if len(prompt_ids) + len(target_ids) > max_tokens:
-            logger.debug(
-                "Truncating prompt: %d + %d > %d",
-                len(prompt_ids),
-                len(target_ids),
-                max_tokens,
-            )
-            prompt_ids = prompt_ids[: max_tokens - len(target_ids)]
+        self.logger.debug(
+            "prompt sample:\n%s",
+            prompts[0][:500]
+        )
+        self.logger.debug(
+            "grade sample: %s",
+            tgt_str[0][:50]
+        )
 
-        if include_target:
-            ids = prompt_ids + target_ids
-        else:
-            ids = prompt_ids + [tokenizer.eos_token_id]
+        enc_prompt = self.tokenizer(
+            prompts,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=self.max_tokens,
+            padding=False,
+        )
 
-        labels = [-100] * len(prompt_ids) + target_ids  # prompt は損失計算しない
-        attn_mask = [1] * len(ids)
+        enc_tgt = self.tokenizer(list(tgt_str), add_special_tokens=False, padding=False)
 
-        input_ids.append(torch.tensor(ids, dtype=torch.long))
-        label_ids.append(torch.tensor(labels, dtype=torch.long))
-        attn_masks.append(torch.tensor(attn_mask, dtype=torch.long))
+        self.logger.info("Tokenization Done")
 
-    # ----- Padding -----
-    pad_id = tokenizer.pad_token_id
-    input_ids = pad_sequence(input_ids, batch_first=True, padding_value=pad_id)
-    labels = pad_sequence(label_ids, batch_first=True, padding_value=-100)
-    attention_mask = pad_sequence(attn_masks, batch_first=True, padding_value=0)
+        input_ids, labels = [], []
+        for p_ids, t_ids in zip(enc_prompt["input_ids"], enc_tgt["input_ids"]):
+            if len(p_ids) + len(t_ids) + 1 > self.max_tokens:
+                p_ids = p_ids[: self.max_tokens - len(t_ids) - 1]
+            eos = [self.tokenizer.eos_token_id]
+            if self.include_target:
+                ids = p_ids + t_ids + eos
+            else:
+                ids = p_ids + eos
+                t_ids = []                       # ラベル長合わせ
+            lbl = [-100] * len(p_ids) + t_ids + eos
+            input_ids.append(torch.tensor(ids, dtype=torch.long))
+            labels.append(torch.tensor(lbl, dtype=torch.long))
 
-    logger.info("Tokenize done: ")
+        batch_ids = pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+        batch_lbl = pad_sequence(labels,    batch_first=True, padding_value=-100)
+        attn_mask = batch_ids.ne(self.tokenizer.pad_token_id).long()
 
-    return {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "labels": labels,
-        "grades": targets,
-    }
+        self.logger.info("Collating Done")
+            
+        self.logger.debug(
+            "Collate: %d samples, max_tokens=%d",
+            len(features),
+            self.max_tokens,
+        )
+
+        return {
+            "input_ids": batch_ids,
+            "attention_mask": attn_mask,
+            "labels": batch_lbl,
+            "grade_str": grades # デバッグ用にtarget文字列も返す
+            } 
+
+
+
+# def collate_fn(
+#     batch,
+#     tokenizer,
+#     max_tokens: int = 4096,
+#     question_filter: list[int] | None = [1, 2, 3, 4, 5],
+#     logger: logging.Logger | None = None,
+#     include_target=True,
+#     testcase=False,
+# ):
+#     logger = logger or logging.getLogger(__name__)
+
+#     Q_TEXT = {
+#         1: "Q1:今日の内容を自分なりの言葉で説明してみてください\n",
+#         2: "Q2:今日の内容で、分かったこと・できたことを書いてください\n",
+#         3: "Q3:今日の内容で、分からなかったこと・できなかったことを書いてください\n",
+#         4: "Q4:質問があれば書いてください\n",
+#         5: "Q5:今日の授業の感想や反省を書いてください\n",
+#     }
+#     question = "".join(Q_TEXT[q] for q in question_filter)
+
+#     if testcase:
+#         preamble = "以下に示す問題に対して，適切な回答を出力してください．ここで，回答は1単語である必要があります．\n"
+#     else:
+#         preamble = (
+#             "あなたは大学の教授であり，学生の成績を決定する役割を担っています。"
+#             "以下に示す学生の講義後アンケートを読み，成績を A, B, C, D, F のいずれかに分類してください。\n"
+#             "L は講義回，Q は質問番号を示します（例: L1-Q1）。\n"
+#             f"アンケートの質問文は，\n{question}\nです．"
+#             "回答が NaN の場合は未回答です。\n"
+#             "上記を踏まえ，出力には A/B/C/D/F のいずれか **1 文字のみ** を返してください。\n"
+#             "アンケート内容："
+#         )
+
+#     # ----- 入力文とターゲットを作成 -----
+#     sources, targets = [], []
+#     for sample in batch:
+#         survey = sample["input_text"]
+#         grade = sample["grades"]  # 'A'~'F' (str)
+
+#         # Llama-3 のチャット書式: <s>[INST] system + user [/INST] assistant
+#         #   - BOS (<s>) は tokenizer.bos_token で自動付与されるので add_special_tokens=True で任せる
+#         prompt = f"[INST] {preamble}\n\n{survey}\n[/INST]\n"
+#         answer = f" {grade}"  # 先頭スペースは BPE で単語境界を作るため
+
+#         sources.append(prompt)
+#         targets.append(answer)
+
+#     logger.info("Collate: %d samples, max_tokens=%d", len(batch), max_tokens)
+#     logger.debug("prompt sample:\n%s", sources[0][:500])
+
+#     # ----- トークナイズ＆教師ラベル作成 -----
+#     input_ids, label_ids, attn_masks = [], [], []
+#     for src, tgt in zip(sources, targets):
+#         # add_special_tokens=False → 自前で eos を足す
+#         prompt_ids = tokenizer.encode(src, add_special_tokens=False)
+#         target_ids = tokenizer.encode(tgt, add_special_tokens=False) + [
+#             tokenizer.eos_token_id
+#         ]
+
+#         # 長さ制御（truncate は “プロンプト側” を先に削る）
+#         if len(prompt_ids) + len(target_ids) > max_tokens:
+#             logger.debug(
+#                 "Truncating prompt: %d + %d > %d",
+#                 len(prompt_ids),
+#                 len(target_ids),
+#                 max_tokens,
+#             )
+#             prompt_ids = prompt_ids[: max_tokens - len(target_ids)]
+
+#         if include_target:
+#             ids = prompt_ids + target_ids
+#         else:
+#             ids = prompt_ids + [tokenizer.eos_token_id]
+
+#         labels = [-100] * len(prompt_ids) + target_ids  # prompt は損失計算しない
+#         attn_mask = [1] * len(ids)
+
+#         input_ids.append(torch.tensor(ids, dtype=torch.long))
+#         label_ids.append(torch.tensor(labels, dtype=torch.long))
+#         attn_masks.append(torch.tensor(attn_mask, dtype=torch.long))
+
+#     # ----- Padding -----
+#     pad_id = tokenizer.pad_token_id
+#     input_ids = pad_sequence(input_ids, batch_first=True, padding_value=pad_id)
+#     labels = pad_sequence(label_ids, batch_first=True, padding_value=-100)
+#     attention_mask = pad_sequence(attn_masks, batch_first=True, padding_value=0)
+
+#     logger.info("Tokenize done: ")
+
+#     return {
+#         "input_ids": input_ids,
+#         "attention_mask": attention_mask,
+#         "labels": labels,
+#         "grades": targets,
+#     }

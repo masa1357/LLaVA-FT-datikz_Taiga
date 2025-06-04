@@ -24,6 +24,7 @@ from util import load_model
 from gradepred_data import GradePredictionDataset, collate_fn
 from torch.nn.utils.rnn import pad_sequence
 import evaluate
+from torch.utils.data import DataLoader
 # 使用VRAM数の推定
 
 # from accelerate import estimate_memory
@@ -43,13 +44,9 @@ BYTES_PER_PARAM = {
     torch.int8: 1,
 }
 
-
-
 def evaluate_generate(
     model, tokenizer, dataset, collate_fn, batch_size: int = 4, device="cuda", log=False
 ):
-    from torch.utils.data import DataLoader
-
     model.eval()
     loader = DataLoader(
         dataset,
