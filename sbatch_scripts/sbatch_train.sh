@@ -3,8 +3,8 @@
 #SBATCH --partition=a6000
 #SBATCH --gres=gpu:4
 #SBATCH --time=48:00:00
-#SBATCH --cpus-per-task=16
-#SBATCH --mem-per-cpu=4G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem-per-cpu=8G
 #SBATCH --output=./log/sbatch_train_result.txt
 #SBATCH --error=./log/sbatch_train_error.txt
 

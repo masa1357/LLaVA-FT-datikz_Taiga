@@ -211,7 +211,6 @@ def compute_metrics_for_single_word_task(eval_pred: EvalPrediction):
 
 # -------- main function --------
 def main():
-    import torch
 
     # torchのバージョンを確認
     print(f"[info] torch version: {torch.__version__}")
@@ -336,7 +335,7 @@ def main():
     print("[info] Checking custom_collate_fn with a sample batch...")
     sample_batch = train_dataset[:2]  # 最初の2サンプルを取得
     collated_batch = custom_collate_fn(sample_batch)
-    
+
     print("[info] Sample collated batch(decoded):")
     # ── ① 入力文の decode ─────────────────────────────
     decoded_inputs = tokenizer.batch_decode(
@@ -359,7 +358,7 @@ def main():
     for i, (inp, lab) in enumerate(zip(decoded_inputs, decoded_labels)):
         print(f"[{i}] input : {inp}")
         print(f"    label : {lab}")
-        
+
 
     # LoRA設定
     peft_config = LoraConfig(
@@ -467,7 +466,7 @@ def main():
     print(
         f"[info] Trainer is set with model: {type(model).__name__}, train dataset size: {len(train_dataset)}, eval dataset size: {len(eval_dataset)}"
     )
-    
+
     print("=" * 100)
     print("=" * 100)
 
@@ -484,7 +483,7 @@ def main():
     )
     print("✅ Evaluation completed successfully!")
     # print("Evaluation result before training:", before_train_results)
-    # torch.cuda.empty_cache() 
+    # torch.cuda.empty_cache()
     print("=" * 100)
     print("=" * 100)
 
@@ -513,8 +512,8 @@ def main():
     #     batch_size=args.micro_batch_size,
     #     log=True,
     # )
-    
-    
+
+
     # eval_results = trainer.evaluate()
     # print("✅ Evaluation completed successfully!")
     # print("Evaluation result:", eval_results)

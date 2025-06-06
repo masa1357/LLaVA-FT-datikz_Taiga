@@ -15,7 +15,7 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         --config_file ds_zero3.yaml \
         src/train_DDP2.py \
         --output_dir ./outputs/llama3-elyza-8b-lora \
-        --epochs 3 \
+        --epochs 2 \
         --batch_size 4 \
         --run_name llama3-elyza-8b-lora_test \
         --max_words 2048

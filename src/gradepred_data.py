@@ -478,8 +478,11 @@ class GradePredictionCollator:
             "L は講義回，Q は質問番号を示します（例: L1-Q1）。\n"
             f"アンケートの質問文は，\n{question}\nです．"
             "回答が NaN の場合は未回答です。\n"
-            "上記を踏まえ，出力には A/B/C/D/F のいずれか **1 文字のみ** を返してください。\n"
+            "上記を踏まえ，出力には A/B/C/D/F のいずれかを答えてください。\n"
             "アンケート内容："
+        )
+        logger.info(
+            f"preamble set:\n================\n{self.preamble}\n================\n"
         )
 
     def __call__(self, features: Iterable[dict[str, Any]]) -> dict[str, torch.Tensor]:
@@ -511,16 +514,10 @@ class GradePredictionCollator:
             for ex in features
         ]
         grades = [ex["grades"] for ex in features]
-        tgt_str = (f' この学生の成績は、"{g}"です。' for g in grades)
+        tgt_str = [f" この学生の成績は、{g}です。" for g in grades]
 
-        self.logger.debug(
-            "prompt sample:\n%s",
-            prompts[0][:500]
-        )
-        self.logger.debug(
-            "grade sample: %s",
-            tgt_str[0][:50]
-        )
+        self.logger.debug("prompt sample:\n%s", prompts[0][:500])
+        self.logger.debug("grade sample: %s", tgt_str[0][:50])
 
         enc_prompt = self.tokenizer(
             prompts,
@@ -530,9 +527,9 @@ class GradePredictionCollator:
             padding=False,
         )
 
-        enc_tgt = self.tokenizer(list(tgt_str), add_special_tokens=False, padding=False)
+        enc_tgt = self.tokenizer(tgt_str, add_special_tokens=False, padding=False)
 
-        self.logger.info("Tokenization Done")
+        self.logger.debug("Tokenization Done")
 
         input_ids, labels = [], []
         for p_ids, t_ids in zip(enc_prompt["input_ids"], enc_tgt["input_ids"]):
@@ -543,17 +540,19 @@ class GradePredictionCollator:
                 ids = p_ids + t_ids + eos
             else:
                 ids = p_ids + eos
-                t_ids = []                       # ラベル長合わせ
+                t_ids = []  # ラベル長合わせ
             lbl = [-100] * len(p_ids) + t_ids + eos
             input_ids.append(torch.tensor(ids, dtype=torch.long))
             labels.append(torch.tensor(lbl, dtype=torch.long))
 
-        batch_ids = pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-        batch_lbl = pad_sequence(labels,    batch_first=True, padding_value=-100)
+        batch_ids = pad_sequence(
+            input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
+        )
+        batch_lbl = pad_sequence(labels, batch_first=True, padding_value=-100)
         attn_mask = batch_ids.ne(self.tokenizer.pad_token_id).long()
 
-        self.logger.info("Collating Done")
-            
+        self.logger.debug("Collating Done")
+
         self.logger.debug(
             "Collate: %d samples, max_tokens=%d",
             len(features),
@@ -564,9 +563,19 @@ class GradePredictionCollator:
             "input_ids": batch_ids,
             "attention_mask": attn_mask,
             "labels": batch_lbl,
-            "grade_str": grades # デバッグ用にtarget文字列も返す
-            } 
+            # "grade_str": grades,  # デバッグ用にtarget文字列も返す
+        }
 
+    def get_prompt(self, features: dict[str, Any]) -> str:
+        """
+        プロンプトを確認
+        """
+        prompts = [
+            f"[INST] {self.preamble}\n\n{ex['input_text']}\n[/INST]\n"
+            for ex in features
+        ]
+
+        return prompts
 
 
 # def collate_fn(
