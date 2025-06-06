@@ -266,12 +266,14 @@ def main():
         max_tokens=args.max_words,
         include_target=True,
         logger=train_logger,
+        question_filter=[1],
     )
     eval_collator = GradePredictionCollator(
         tokenizer,
         max_tokens=args.max_words,
         include_target=False,
         logger=eval_logger,
+        question_filter=[1],
     )
 
     logger.info(
@@ -379,7 +381,6 @@ def main():
         ddp_find_unused_parameters=False,
         load_best_model_at_end=False,
         label_names=["labels"],  # PEFT環境下では明示したほうが良いらしい？
-        # learning_rate=2e-4,
         learning_rate=2e-6,
     )
 

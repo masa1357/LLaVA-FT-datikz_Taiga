@@ -18,7 +18,7 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         --epochs 2 \
         --batch_size 4 \
         --run_name llama3-elyza-8b-lora_test \
-        --max_words 2048
+        --max_words 4096
         "
 
 echo "Running command at $(date):" | tee "$LOGFILE"

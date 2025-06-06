@@ -22,6 +22,8 @@ import numpy as np
 import random
 import time
 from contextlib import contextmanager
+import io
+import sys
 
 BYTES_PER_PARAM = {
     torch.float32: 4,
@@ -46,6 +48,7 @@ def set_logger(name: str = __name__, level=INFO):
         )
 
         stream_handler = StreamHandler()
+        stream_handler.setStream(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
 
         # ? 標準出力のhandlerをセット
         stream_handler.setLevel(level)

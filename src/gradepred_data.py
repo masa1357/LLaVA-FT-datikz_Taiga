@@ -471,14 +471,15 @@ class GradePredictionCollator:
             5: "Q5:今日の授業の感想や反省を書いてください\n",
         }
         question = "".join(Q_TEXT[q] for q in question_filter)
+        logger.info(f"Questions: {question_filter}, {question}")
 
         self.preamble = (
-            "あなたは大学の教授であり，学生の成績を決定する役割を担っています。"
-            "以下に示す学生の講義後アンケートを読み，成績を A, B, C, D, F のいずれかに分類してください。\n"
-            "L は講義回，Q は質問番号を示します（例: L1-Q1）。\n"
-            f"アンケートの質問文は，\n{question}\nです．"
+            "あなたは大学の教授であり、学生の成績を決定する役割を担っています。"
+            "以下に示す学生の講義後アンケートを読み、成績を高い順に A、B、C、D、F のいずれかに分類してください。\n"
+            "L は講義回、Q は質問番号を示します（例: L1-Q1）。\n"
+            f"アンケートの質問文は、\n{question}です。"
             "回答が NaN の場合は未回答です。\n"
-            "上記を踏まえ，出力には A/B/C/D/F のいずれかを答えてください。\n"
+            "出力には A、B、C、D、F のいずれかを含めてください。\n"
             "アンケート内容："
         )
         logger.info(
