@@ -5,7 +5,6 @@ export PYTHONPATH=$(pwd)
 
 LOGFILE="./log/train_log_$(date +%Y%m%d_%H%M%S).log"
 
-
 CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         TORCH_DISABLE_DYNAMO=1 \
         TORCH_COMPILE=0 \
@@ -15,10 +14,10 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         --config_file ds_zero3.yaml \
         src/train_DDP2.py \
         --output_dir ./outputs/llama3-elyza-8b-lora \
-        --epochs 2 \
+        --epochs 3 \
         --batch_size 4 \
         --run_name llama3-elyza-8b-lora_test \
-        --max_words 4096
+        --max_words 3072
         "
 
 echo "Running command at $(date):" | tee "$LOGFILE"

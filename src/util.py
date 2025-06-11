@@ -113,7 +113,10 @@ def load_model(
 
     print(f"[info] Loading processor (use_fast={use_fast})...")
     # processor = AutoProcessor.from_pretrained(base_model, use_fast=use_fast)
-    tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=use_fast)
+    tokenizer = AutoTokenizer.from_pretrained(
+        base_model,
+        use_fast=use_fast,  # padding_side="left"
+    )
 
     if tokenizer.pad_token_id is None:
         #! どっちがいいかは要検討

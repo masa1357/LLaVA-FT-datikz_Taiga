@@ -11,7 +11,7 @@
 # ================ 標準ライブラリ ================
 import os
 import argparse
-from logging import getLogger, StreamHandler, Formatter, DEBUG, INFO, WARNING, Logger
+from logging import getLogger, StreamHandler, Formatter, DEBUG, INFO, WARNING, ERROR, Logger
 from functools import partial
 from typing import Dict, List
 
@@ -29,10 +29,10 @@ from moverscore_v2 import word_mover_score, get_idf_dict
 from transformers import Trainer, TrainingArguments, set_seed, GenerationConfig
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers.trainer_utils import EvalPrediction, PredictionOutput
-
 # ================ プロジェクト内（ローカル） ================
 from util import load_model, set_seed, set_logger
 from gradepred_data import GradePredictionDataset, GradePredictionCollator
+from accelerate import Accelerator
 
 # -------- environment setting --------
 load_dotenv()
@@ -57,34 +57,49 @@ if not hasattr(np, "float"):
 
 
 def evaluate(
-    pred_result: PredictionOutput,
+    pred_result,
     eval_dataset,
     tokenizer,
     show_samples: int = 5,
     logger: Logger = getLogger("EvaluationLogger"),
 ) -> Dict[str, float]:
 
-    logger.info(f"pred_result elements\t:{pred_result._asdict().keys()}")
+    # logger.info(f"pred_result elements\t:{pred_result._asdict().keys()}")
 
-    pred_logits = pred_result.predictions  # (bs, seq, vocab) か np.object_
-    logger.info(f"pred_logits shape\t: {pred_logits.shape}")
-    logger.debug(f"pred_logits \t: \n{pred_logits}")
-    if pred_logits.ndim == 3:  # logits パターン
-        pred_ids = pred_logits.argmax(-1)  # (bs, seq)
-    else:  # 既に ID が入っている場合
-        logger.info("pred_logits is already in ID format, skipping argmax operation.")
-        pred_ids = pred_logits
+    if isinstance(pred_result, dict):
+        logger.info(f"pred_result keys\t:{list(pred_result.keys())}")
+        pred_text = pred_result["output_sentence"]
+        # input_text = pred_result["input_sentence"]
+    else:  # NamedTuple
+        logger.info(f"pred_result elements\t:{pred_result._asdict().keys()}")
+        pred_text = pred_result.output_sentence
+        # input_text = pred_result.input_sentence
 
-    # -100 → pad に置換（labels も同様に）
-    pred_ids = pred_ids.tolist()  # list[list[int]]
-    label_ids = pred_result.label_ids
-    logger.info(f"label_ids shape\t: {label_ids.shape}")
-    logger.debug(f"label_ids \t: \n{label_ids}")
-    label_ids[label_ids == -100] = tokenizer.pad_token_id
-    label_ids = label_ids.tolist()
+    logger.info(f"#pred={len(pred_text)}, #labels={len(eval_dataset)}")
 
-    pred_text = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
-    labels_text = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+    # pred_logits = pred_result.predictions  # (bs, seq, vocab) か np.object_
+    # logger.info(f"pred_logits shape\t: {pred_logits.shape}")
+    # logger.debug(f"pred_logits \t: \n{pred_logits}")
+    # if pred_logits.ndim == 3:  # logits パターン
+    #     pred_ids = pred_logits.argmax(-1)  # (bs, seq)
+    # else:  # 既に ID が入っている場合
+    #     logger.info("pred_logits is already in ID format, skipping argmax operation.")
+    #     pred_ids = pred_logits
+
+    # # -100 → pad に置換（labels も同様に）
+    # pred_ids = pred_ids.tolist()  # list[list[int]]
+    # label_ids = pred_result.label_ids
+    # logger.info(f"label_ids shape\t: {label_ids.shape}")
+    # logger.debug(f"label_ids \t: \n{label_ids}")
+    # label_ids[label_ids == -100] = tokenizer.pad_token_id
+    # label_ids = label_ids.tolist()
+
+    # pred_text = pred_result.output_sentence
+    grades = [row["grades"] for row in eval_dataset]
+    labels_text = [f" この学生の成績は、{g}です。" for g in grades]
+
+    # pred_text = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+    # labels_text = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
 
     if show_samples > 0:
         logger.info("✅️ Visualize sample answers")
@@ -92,9 +107,11 @@ def evaluate(
             logger.info(f"Sample {i}\t: ")
             logger.info(f"Raw Questionnaires\t: \n{eval_dataset[i]['input_text']}")
             # print(f"Raw Questionnaires\t: \n{eval_dataset[i]['input_text']}")
-
+            logger.info(f"========================")
             logger.info(f"Predict\t: \n{pred_text[i]}")
             logger.info(f"Target\t: \n{labels_text[i]}")
+            logger.info(f"========================")
+            
 
     # Metrics #1    : BLEU
     bleu = sacrebleu.corpus_bleu(pred_text, [labels_text]).score
@@ -143,6 +160,10 @@ def main():
     # ? logger設定
     print("set logger")
     logger = set_logger(level=INFO)
+
+    acc = Accelerator()
+    if not acc.is_main_process:
+        logger.setLevel(ERROR)
     logger.info(f"logger set complite")
 
     # ================================================================
@@ -234,6 +255,7 @@ def main():
 
     model, tokenizer = load_model(args.base_model, if_ZeRO=True)
     summary(model)
+    tokenizer.padding_side = "left"
 
     # データセットを読み込む
     dataset_path = "./data/"
@@ -254,10 +276,6 @@ def main():
     logger.info(f"len(train_dataset): {len(train_dataset)}")
     logger.info(f"len(eval_dataset): {len(eval_dataset)}")
 
-    # 独自collatorの定義
-    # custom_collate_fn = partial(
-    #     collate_fn, tokenizer=tokenizer, max_tokens=args.max_words, testcase=True, question_filter=[1]
-    # )
     train_logger = set_logger(name="CollateTrain", level=INFO)
     eval_logger = set_logger(name="CollateEval", level=DEBUG)
 
@@ -359,39 +377,39 @@ def main():
 
     # ②TrainingArguments
     training_args = TrainingArguments(
-        gradient_checkpointing=True,
-        output_dir=args.output_dir,
-        per_device_train_batch_size=args.micro_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,  # args.grad_accum,
-        num_train_epochs=args.epochs,
-        warmup_ratio=0.03,
-        logging_dir="./logs",
-        logging_steps=50,
-        lr_scheduler_type="cosine",
-        optim="adamw_torch",
-        save_strategy="epoch",
-        eval_strategy="epoch",
-        fp16=True,
-        fp16_full_eval=True,
-        per_device_eval_batch_size=1,
-        eval_accumulation_steps=1,
-        remove_unused_columns=False,
-        run_name=args.run_name,
-        save_total_limit=args.epochs,
-        ddp_find_unused_parameters=False,
-        load_best_model_at_end=False,
-        label_names=["labels"],  # PEFT環境下では明示したほうが良いらしい？
-        learning_rate=2e-6,
+        gradient_checkpointing      = True,
+        output_dir                  = args.output_dir,
+        per_device_train_batch_size = args.micro_batch_size,
+        gradient_accumulation_steps = gradient_accumulation_steps,  # args.grad_accum,
+        num_train_epochs            = args.epochs,
+        warmup_ratio                = 0.03,
+        logging_dir                 = "./logs",
+        logging_steps               = 50,
+        lr_scheduler_type           = "cosine",
+        optim                       = "adamw_torch",
+        save_strategy               = "epoch",
+        eval_strategy               = "epoch",
+        fp16                        = True,
+        fp16_full_eval              = True,
+        per_device_eval_batch_size  = 1,
+        eval_accumulation_steps     = 1,
+        remove_unused_columns       = False,
+        run_name                    = args.run_name,
+        save_total_limit            = args.epochs,
+        ddp_find_unused_parameters  = False,
+        load_best_model_at_end      = False,
+        label_names                 = ["labels"],  # PEFT環境下では明示したほうが良いらしい？
+        learning_rate               = 2e-6,
     )
 
     trainer = Trainer(
-        model=model,
-        tokenizer=tokenizer,
-        data_collator=train_collator,
+        model           = model,
+        tokenizer       = tokenizer,
+        data_collator   = train_collator,
         # compute_metrics=custom_compute_metrics,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        args            = training_args,
+        train_dataset   = train_dataset,
+        eval_dataset    = eval_dataset,
     )
 
     logger.info("Trainer instance has been created.")
@@ -418,23 +436,85 @@ def main():
     # logger.info(
     #     f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\nAccuracy\t: {metrics['accuracy']}\n"
     # )
-
-    # ================================================================
-    # 訓練
-    # ================================================================
-    # trainer.accelerator.end_training()  # ★ inference Accelerator を閉じる
-    # trainer._created_accelerator = False  # ★ “作成済み” フラグをリセット
-    logger.info("🔄 Start training...")
-    trainer.data_collator = train_collator
-    trainer.train()
-    logger.info("✅ Model training has been completed successfully!")
-
-    # ================================================================
-    # 訓練後推論
-    # ================================================================
-    logger.info(" Start Evaluation after training...")
+    logger.info("=================================================")
+    logger.info("=================================================")
+    logger.info("🔄Start Evaluation before training...")
     trainer.data_collator = eval_collator
-    pred_result = trainer.predict(eval_dataset)
+    # pred_result = trainer.predict(eval_dataset)
+    # model.eval()
+    # pred_text = []
+    # input_text = []
+    # loader = DataLoader(
+    #     eval_dataset,
+    #     batch_size=args.batch_size,
+    #     shuffle=False,
+    #     collate_fn=eval_collator,
+    # )
+    # # modelのdeviceを設定
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # model.to(device)
+    
+    # for batch in loader:
+    #     batch = {k: v.to(model.device) for k, v in batch.items()}
+    #     input_ids = batch["input_ids"]
+    #     attention_mask = batch["attention_mask"]
+
+    #     with torch.no_grad():
+    #         outputs = model.generate(
+    #             input_ids=input_ids,
+    #             attention_mask=attention_mask,
+    #             max_new_tokens=128,
+    #             do_sample=True,  # 推論時は通常Greedy
+    #             pad_token_id=tokenizer.pad_token_id,
+    #             eos_token_id=tokenizer.eos_token_id,
+    #         )
+
+    #     decoded_inputs = tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+    #     decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+    #     input_text.extend(decoded_inputs)
+    #     pred_text.extend(decoded_outputs)
+
+    trainer.generation_config = GenerationConfig(
+        max_new_tokens=128,
+        do_sample=True,
+        top_p=0.9,            # 必要に応じて
+        temperature=0.7,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        # 分散推論の長さずれ防止
+        # synced_gpus=True,     # transformers>=4.34 なら有効
+    )
+    trainer.data_collator = eval_collator
+    pred_output = trainer.predict(eval_dataset)        # DeepSpeed + ZeRO3 対応済み
+
+    # pred_output.predictions: (n_batch, n_seq, seq_len)  or  object dtype
+    pred_ids = pred_output.predictions
+
+    # ① NumPy → list, ② 2 次元めがあるなら先頭系列を採用
+    if isinstance(pred_ids, np.ndarray):
+        pred_ids = pred_ids.tolist()                   # dtype=object でも OK
+
+    # 形状が [batch][alt][token] の場合、先頭 alt だけ残す
+    if isinstance(pred_ids[0][0], (list, np.ndarray)):
+        pred_ids = [seqs[0] for seqs in pred_ids]      # beam=0 / sample=0
+
+    decoded_outputs = tokenizer.batch_decode(
+        pred_ids,
+        skip_special_tokens=True,
+    )
+
+    input_ids_list = [example["input_ids"] for example in eval_dataset]  # list[list[int]]
+    decoded_inputs = tokenizer.batch_decode(
+        input_ids_list,
+        skip_special_tokens=True,
+    )
+
+    # 結果を格納（Trainer.predictの形式に寄せたい場合）
+    pred_result = {
+        "input_sentence": input_text,
+        "output_sentence": pred_text,
+    }
 
     # logger.debug(f"pred_result elements\t:{pred_result._asdict().keys()}")
     # pred_text = tokenizer.batch_decode(
@@ -453,6 +533,89 @@ def main():
     metrics = evaluate(
         pred_result, eval_dataset, tokenizer, show_samples=5, logger=logger
     )
+    logger.info("✅ Evaluation before training completed successfully!")
+    logger.info(
+        f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\nAccuracy\t: {metrics['accuracy']}\n"
+    )
+
+    # ================================================================
+    # 訓練
+    # ================================================================
+    logger.info("=================================================")
+    logger.info("=================================================")
+    
+    # trainer.accelerator.end_training()  # ★ inference Accelerator を閉じる
+    # trainer._created_accelerator = False  # ★ “作成済み” フラグをリセット
+    model.train()
+    logger.info("🔄 Start training...")
+    trainer.data_collator = train_collator
+    trainer.train()
+    logger.info("✅ Model training has been completed successfully!")
+
+    # ================================================================
+    # 訓練後推論
+    # ================================================================
+    logger.info("=================================================")
+    logger.info("=================================================")
+    
+    logger.info("🔄 Start Evaluation after training...")
+    trainer.data_collator = eval_collator
+    # pred_result = trainer.predict(eval_dataset)
+    model.eval()
+    pred_text = []
+    input_text = []
+    loader = DataLoader(
+        eval_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=eval_collator,
+    )
+    for batch in loader:
+        batch = {k: v.to(model.device) for k, v in batch.items()}
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+
+        with torch.no_grad():
+            # 生成
+            outputs = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=128,
+                do_sample=True,  # 推論時は通常Greedy
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+        decoded_inputs = tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+        decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+        input_text.extend(decoded_inputs)
+        pred_text.extend(decoded_outputs)
+
+    # 結果を格納（Trainer.predictの形式に寄せたい場合）
+    pred_result = {
+        "input_sentence": input_text,
+        "output_sentence": pred_text,
+    }
+
+    # logger.debug(f"pred_result elements\t:{pred_result._asdict().keys()}")
+    # pred_text = tokenizer.batch_decode(
+    #     pred_result.predictions, skip_special_tokens=True
+    # )
+    # labels_text = tokenizer.batch_decode(
+    #     pred_result.label_ids, skip_special_tokens=True
+    # )
+
+    # logger.info("✅️ Visualize sample answers")
+    # for i in range(5):
+    #     logger.info(f"Sample {i}\t: ")
+    #     logger.info(f"Predict\t: {pred_text[i]}")
+    #     logger.info(f"Target\t: {labels_text[i]}")
+
+    metrics = evaluate(
+        pred_result, eval_dataset, tokenizer, show_samples=5, logger=logger
+    )
+    logger.info("✅ Evaluation after training completed successfully!")
     logger.info(
         f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\nAccuracy\t: {metrics['accuracy']}\n"
     )

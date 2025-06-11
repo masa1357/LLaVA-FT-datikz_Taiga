@@ -33,7 +33,7 @@ class GradePredictionDataset(Dataset):
     Reflection データセット内の任意のテキストから成績を予測するデータセット型
     構造：
         {
-            "userid" : "user_id",
+            "userid": "user_id",
             "L1": {
                 "Q1": "Q1の回答",
                 "Q2": "Q2の回答",
@@ -76,14 +76,17 @@ class GradePredictionDataset(Dataset):
 
         self.answer_col = answer_col
         self.concat = concatenate
+
         # フィルタが None→全質問(1-5)、指定がある→重複排除 + ソート
         self.q_filter = (
             sorted(set(question_filter)) if question_filter else list(range(1, 6))
         )
 
         if testcase:
-            # ----------------- テストデータセット -----------------
-            # JSQuAD のテストデータセットを使用
+            # ================================================================
+            # LLM実行確認用のダミーデータセットを読み込み
+            # JSQuAD のデータセットを利用
+            # ================================================================
             from datasets import load_dataset
 
             ds = load_dataset("shunk031/JGLUE", name="JSQuAD", trust_remote_code=True)
@@ -110,7 +113,11 @@ class GradePredictionDataset(Dataset):
             self.dataset = self.dataset[:100]
 
         else:
-            # ----------------- データ読込 -----------------
+            # ================================================================
+            # デフォルトのデータセット読み込み
+            # dataset_path/Reflection   : 生徒のアンケート回答
+            # dataset_path/Grade        : 成績データ
+            # ================================================================
             self.reflection_path = Path(dataset_path) / "Reflection"
             self.grade_path = Path(dataset_path) / "Grade"
             for p in (self.reflection_path, self.grade_path):
@@ -136,18 +143,30 @@ class GradePredictionDataset(Dataset):
             f"concat={self.concat}"
         )
 
-        # -------------------------------------------------
-        # 8:2 の層化分割
-        # -------------------------------------------------
+        # ================================================================
+        # 層化分割（デフォルト 8:2）
+        # ================================================================
         labels = [s["labels"] for s in self.dataset]
 
         train_idx, valid_idx = train_test_split(
             range(len(self.dataset)),
             test_size=valid_ratio,
-            stratify=labels,
+            stratify=labels,    #! ラベル分布を保持
             random_state=random_state,
         )
 
+        # ================================================================
+        # モードに応じたデータセットを出力
+        # mode: "train", "valid", "all"
+        #   - "train"  : 学習用データセット
+        #   - "valid"  : 検証用データセット
+        #   - "all"    : 全データセット（学習・検証両方）
+        # 呼び出し側で各モードに応じてインスタンス化
+        #  - 例: 
+        #       `GradePredictionDataset(..., mode="train")`
+        #       `GradePredictionDataset(..., mode="valid")`
+        #   -> random_stateを統一しないとリークするので注意
+        # ================================================================
         match mode:
             case "train":
                 self.train_dataset = [self.dataset[i] for i in train_idx]
@@ -181,88 +200,24 @@ class GradePredictionDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         return self.dataset[idx]
 
-    # ──────────────────────────────────────────────
-    # 特定の質問番号を抽出する関数
-    # ──────────────────────────────────────────────
-    # def subset_by_questions(
-    #     self,
-    #     q_numbers: list[int] | tuple[int, ...],
-    #     *,
-    #     concatenate: bool = False,
-    #     sep: str = " ",
-    # ) -> list[dict]:
-    #     """
-    #     指定した質問番号 (1-5) だけを残した新しいサンプル集合を返す。
-
-    #     Parameters
-    #     ----------
-    #     q_numbers    : 取得したい質問番号のリスト/タプル  e.g. [2,4]
-    #     concatenate  : True にすると L1〜L15 の回答を串刺しで連結し
-    #                    'input_text' キー１本にまとめて返す
-    #     sep          : concatenate=True のとき回答間をつなぐ区切り文字列
-
-    #     Returns
-    #     -------
-    #     samples      : list[dict]
-    #     """
-    #     qs = {f"Q{n}" for n in q_numbers}
-    #     out = []
-
-    #     for sample in self.dataset:
-    #         new_sample = {"userid": sample["userid"], "labels": sample["labels"]}
-
-    #         if concatenate:
-    #             parts = []
-    #             for c in range(1, 16):
-    #                 ldict = sample[f"L{c}"]
-    #                 # Qx が欠損なら fill_token が入っているのでそのまま使う
-    #                 for q in qs:
-    #                     parts.append(ldict[q])
-    #             new_sample["input_text"] = sep.join(parts)
-    #         else:
-    #             # ネスト構造を維持して部分的に残す
-    #             for c in range(1, 16):
-    #                 new_sample[f"L{c}"] = {q: sample[f"L{c}"][q] for q in qs}
-    #         out.append(new_sample)
-    #     return out
-
     # -------- 内部ユーティリティ --------
     def _read_folder(self, path: Path) -> pd.DataFrame:
+        """
+        指定されたパス内の CSV ファイル群を読み込み，縦にconcatする
+        Parameters
+        ----------
+        path : Path
+            読み込むフォルダのパス
+
+        Returns
+        -------
+        pd.DataFrame
+            読み込んだ CSV ファイルを縦に結合した DataFrame
+        """
         files = list(path.glob("*.csv"))
         if not files:
             raise FileNotFoundError(f"{path} に CSV がありません")
         return pd.concat(map(pd.read_csv, files), ignore_index=True)
-
-    # def read_folder(self, path: Path, rules: str = "*.csv") -> pd.DataFrame:
-    #     """
-    #     フォルダ内のファイルを全て読み込み，縦方向に結合する
-
-    #     Parameters
-    #     ----------
-    #     path  : str
-    #         フォルダパス
-    #     rules : str
-    #         読み込むフォルダの形式（デフォルトではcsvファイルすべて）
-
-    #     Returns
-    #     -------
-    #     df : DataFrame
-    #         読み込んだ全てのcsvを縦に結合したdf.
-    #     """
-    #     self.logger.info(f"Read {path} {rules} data...")
-    #     file_list = list(path.glob(rules))
-    #     self.logger.info(f"Found files: {file_list}")
-
-    #     df = pd.DataFrame()
-    #     if file_list:
-    #         for file in file_list:
-    #             temp_df = pd.read_csv(file)
-    #             df = pd.concat([df, temp_df], axis=0, ignore_index=True)
-    #         self.logger.info(f"Total rows: {len(df)}")
-    #     else:
-    #         self.logger.error(f"No {rules} files in {path}")
-
-    #     return df
 
     def _preprocess(self, text: str | None) -> str:
         """
@@ -305,8 +260,49 @@ class GradePredictionDataset(Dataset):
 
     def _build_nested(self, df: pd.DataFrame) -> list[dict]:
         """
-        DataFrame（userid, question_number, course_number, answer_content, label）
-        ──▶ ユーザ単位のネスト辞書リストに変換
+        DataFrame をユーザ単位のネスト辞書リストに変換する
+        Parameters
+        ----------
+        df : pd.DataFrame
+            ユーザのアンケート回答データ
+            必須カラム：
+                - userid: ユーザID
+                - question_number: 質問番号 (1-5)
+                - course_number: 講義回 (1-15)
+                - answer_content: 回答内容
+                - grade: 成績 (A, B, C, D, F)
+                - label: ラベル (0~4)
+        Returns
+        -------
+        if concat=True:
+            samples : list[dict]
+                ユーザ単位の辞書リスト
+                各辞書は以下の形式：
+                {
+                    "userid": str,      # ユーザID
+                    "labels": int,      # ラベル (0~4)
+                    "grades": str,      # 成績 (A, B, C, D, F)
+                    "input_text": str,
+                        # アンケート内容を連結したテキスト
+                        # 各講義回の回答を "L1-Q1: 回答内容" の形式で連結
+                }
+                
+        else:
+            samples : list[dict]
+                ユーザ単位のネスト辞書リスト
+                各辞書は以下の形式：
+                {
+                    "userid": str,      # ユーザID
+                    "labels": int,      # ラベル (0~4)
+                    "grades": str,      # 成績 (A, B, C, D, F)
+                    "L1": {             # 講義回1の回答
+                        "Q1": str,     # Q1の回答
+                        "Q2": str,     # Q2の回答
+                        ...
+                    },
+                    ...
+                }
+        
         """
 
         # フィルタ掛け
@@ -341,6 +337,13 @@ class GradePredictionDataset(Dataset):
         for uid, block in pivot.groupby(level=0):
             grade_val = df.loc[df["userid"] == uid, "grade"].iloc[0]
             label_val = df.loc[df["userid"] == uid, "label"].iloc[0]
+            
+            # ================================================================
+            # 連結するか，ネスト構造を保持するか
+            # concat=True なら，テキストを連結して1つの文字列にする
+            # concat=False なら，ネスト構造を保持して辞書型で返す
+            # LLMへの入力のため，concat=Trueにしてプロンプト化する
+            # ================================================================
             if self.concat:
                 # 連結テキストモード
                 sep = "\n"
@@ -376,52 +379,6 @@ class GradePredictionDataset(Dataset):
                         entry[key] = {q: self.fill_token for q in qs_cols}
                 samples.append(entry)
         return samples
-
-        # # ── ① 期待される全組み合わせを用意し欠損を明示 ──
-        # idx = pd.MultiIndex.from_product(
-        #     [df["userid"].unique(), range(1, 16), range(1, 6)],
-        #     names=["userid", "course_number", "question_number"],
-        # )
-        # df_full = (
-        #     df.set_index(["userid", "course_number", "question_number"])
-        #     .reindex(idx)  # 存在しない行を補完
-        #     .reset_index()
-        # )
-
-        # # ── ② pivot で Lx–Qy テーブル化 ──
-        # pivot = (
-        #     df_full.pivot_table(
-        #         index=["userid", "course_number"],
-        #         columns="question_number",
-        #         values=answer_col,
-        #         aggfunc="first",
-        #     )
-        #     .rename(columns=lambda q: f"Q{int(q)}")
-        #     .fillna(fill_token)
-        # )
-
-        # # ── ③ ユーザごとにネスト辞書を構築 ──
-        # result = []
-        # for userid, user_block in pivot.groupby(level=0):
-        #     user_dict = {"userid": userid}
-
-        #     # 各コース L1〜L15
-        #     for c in range(1, 16):
-        #         key = f"L{c}"
-        #         if (userid, c) in user_block.index:
-        #             user_dict[key] = user_block.loc[(userid, c)].to_dict()
-        #         else:  # そのコースまるごと欠損
-        #             user_dict[key] = {f"Q{q}": fill_token for q in range(1, 6)}
-
-        #     # labels（userid ごとに同じと仮定）
-        #     label_val = df.loc[df["userid"] == userid, "label"].iloc[
-        #         0
-        #     ]  # ない場合は KeyError。必要なら try/except で None を許容
-        #     user_dict["labels"] = int(label_val)
-
-        #     result.append(user_dict)
-
-        # return result
 
 
 class GradePredictionCollator:
@@ -511,8 +468,7 @@ class GradePredictionCollator:
             }
         """
         prompts = [
-            f"[INST] {self.preamble}\n\n{ex['input_text']}\n[/INST]\n"
-            for ex in features
+            f"[INST] {self.preamble}\n{ex['input_text']}\n[/INST]\n" for ex in features
         ]
         grades = [ex["grades"] for ex in features]
         tgt_str = [f" この学生の成績は、{g}です。" for g in grades]
@@ -578,99 +534,3 @@ class GradePredictionCollator:
 
         return prompts
 
-
-# def collate_fn(
-#     batch,
-#     tokenizer,
-#     max_tokens: int = 4096,
-#     question_filter: list[int] | None = [1, 2, 3, 4, 5],
-#     logger: logging.Logger | None = None,
-#     include_target=True,
-#     testcase=False,
-# ):
-#     logger = logger or logging.getLogger(__name__)
-
-#     Q_TEXT = {
-#         1: "Q1:今日の内容を自分なりの言葉で説明してみてください\n",
-#         2: "Q2:今日の内容で、分かったこと・できたことを書いてください\n",
-#         3: "Q3:今日の内容で、分からなかったこと・できなかったことを書いてください\n",
-#         4: "Q4:質問があれば書いてください\n",
-#         5: "Q5:今日の授業の感想や反省を書いてください\n",
-#     }
-#     question = "".join(Q_TEXT[q] for q in question_filter)
-
-#     if testcase:
-#         preamble = "以下に示す問題に対して，適切な回答を出力してください．ここで，回答は1単語である必要があります．\n"
-#     else:
-#         preamble = (
-#             "あなたは大学の教授であり，学生の成績を決定する役割を担っています。"
-#             "以下に示す学生の講義後アンケートを読み，成績を A, B, C, D, F のいずれかに分類してください。\n"
-#             "L は講義回，Q は質問番号を示します（例: L1-Q1）。\n"
-#             f"アンケートの質問文は，\n{question}\nです．"
-#             "回答が NaN の場合は未回答です。\n"
-#             "上記を踏まえ，出力には A/B/C/D/F のいずれか **1 文字のみ** を返してください。\n"
-#             "アンケート内容："
-#         )
-
-#     # ----- 入力文とターゲットを作成 -----
-#     sources, targets = [], []
-#     for sample in batch:
-#         survey = sample["input_text"]
-#         grade = sample["grades"]  # 'A'~'F' (str)
-
-#         # Llama-3 のチャット書式: <s>[INST] system + user [/INST] assistant
-#         #   - BOS (<s>) は tokenizer.bos_token で自動付与されるので add_special_tokens=True で任せる
-#         prompt = f"[INST] {preamble}\n\n{survey}\n[/INST]\n"
-#         answer = f" {grade}"  # 先頭スペースは BPE で単語境界を作るため
-
-#         sources.append(prompt)
-#         targets.append(answer)
-
-#     logger.info("Collate: %d samples, max_tokens=%d", len(batch), max_tokens)
-#     logger.debug("prompt sample:\n%s", sources[0][:500])
-
-#     # ----- トークナイズ＆教師ラベル作成 -----
-#     input_ids, label_ids, attn_masks = [], [], []
-#     for src, tgt in zip(sources, targets):
-#         # add_special_tokens=False → 自前で eos を足す
-#         prompt_ids = tokenizer.encode(src, add_special_tokens=False)
-#         target_ids = tokenizer.encode(tgt, add_special_tokens=False) + [
-#             tokenizer.eos_token_id
-#         ]
-
-#         # 長さ制御（truncate は “プロンプト側” を先に削る）
-#         if len(prompt_ids) + len(target_ids) > max_tokens:
-#             logger.debug(
-#                 "Truncating prompt: %d + %d > %d",
-#                 len(prompt_ids),
-#                 len(target_ids),
-#                 max_tokens,
-#             )
-#             prompt_ids = prompt_ids[: max_tokens - len(target_ids)]
-
-#         if include_target:
-#             ids = prompt_ids + target_ids
-#         else:
-#             ids = prompt_ids + [tokenizer.eos_token_id]
-
-#         labels = [-100] * len(prompt_ids) + target_ids  # prompt は損失計算しない
-#         attn_mask = [1] * len(ids)
-
-#         input_ids.append(torch.tensor(ids, dtype=torch.long))
-#         label_ids.append(torch.tensor(labels, dtype=torch.long))
-#         attn_masks.append(torch.tensor(attn_mask, dtype=torch.long))
-
-#     # ----- Padding -----
-#     pad_id = tokenizer.pad_token_id
-#     input_ids = pad_sequence(input_ids, batch_first=True, padding_value=pad_id)
-#     labels = pad_sequence(label_ids, batch_first=True, padding_value=-100)
-#     attention_mask = pad_sequence(attn_masks, batch_first=True, padding_value=0)
-
-#     logger.info("Tokenize done: ")
-
-#     return {
-#         "input_ids": input_ids,
-#         "attention_mask": attention_mask,
-#         "labels": labels,
-#         "grades": targets,
-#     }
