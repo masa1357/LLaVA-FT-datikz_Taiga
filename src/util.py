@@ -48,7 +48,7 @@ def set_logger(name: str = __name__, level=INFO):
         )
 
         stream_handler = StreamHandler()
-        stream_handler.setStream(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
+        # stream_handler.setStream(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
 
         # ? 標準出力のhandlerをセット
         stream_handler.setLevel(level)
@@ -101,7 +101,7 @@ def load_model(
         processor (AutoProcessor): 読み込まれたプロセッサ
     """
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    torch.cuda.set_device(local_rank)  #!<追加> ★ rankごとのGPUを固定
+    torch.cuda.set_device(local_rank)  # <追加> rankごとのGPUを固定
     device = f"cuda:{local_rank}"
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -117,14 +117,21 @@ def load_model(
         base_model,
         use_fast=use_fast,  # padding_side="left"
     )
+    tokenizer.padding_side = "left"
+    #! pad_token が無い場合だけ追加
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
-    if tokenizer.pad_token_id is None:
-        #! どっちがいいかは要検討
-        # tokenizer.pad_token = tokenizer.eos_token
-        # model.config.pad_token_id = tokenizer.pad_token_id
+    #! 語彙サイズを合わせる
+    model.resize_token_embeddings(len(tokenizer))
 
-        tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
-        model.resize_token_embeddings(len(tokenizer))
+    # if tokenizer.pad_token_id is None:
+    #     # どっちがいいかは要検討
+    #     # tokenizer.pad_token = tokenizer.eos_token
+    #     # model.config.pad_token_id = tokenizer.pad_token_id
+
+    #     tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
+    #     model.resize_token_embeddings(len(tokenizer))
 
     print("✅ Model and processor loaded successfully!")
     return model, tokenizer

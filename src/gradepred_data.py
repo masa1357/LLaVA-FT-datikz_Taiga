@@ -67,6 +67,8 @@ class GradePredictionDataset(Dataset):
         random_state: int = 42,
         mode: str = "all",
         testcase: bool = False,
+        division: bool = False,
+        add_extended: bool = False,
     ):
         """
         ファイルを読み込み，データセットを構成する
@@ -151,7 +153,7 @@ class GradePredictionDataset(Dataset):
         train_idx, valid_idx = train_test_split(
             range(len(self.dataset)),
             test_size=valid_ratio,
-            stratify=labels,    #! ラベル分布を保持
+            stratify=labels,  #! ラベル分布を保持
             random_state=random_state,
         )
 
@@ -162,7 +164,7 @@ class GradePredictionDataset(Dataset):
         #   - "valid"  : 検証用データセット
         #   - "all"    : 全データセット（学習・検証両方）
         # 呼び出し側で各モードに応じてインスタンス化
-        #  - 例: 
+        #  - 例:
         #       `GradePredictionDataset(..., mode="train")`
         #       `GradePredictionDataset(..., mode="valid")`
         #   -> random_stateを統一しないとリークするので注意
@@ -178,6 +180,65 @@ class GradePredictionDataset(Dataset):
                 pass
             case _:
                 raise ValueError(f"Invalid mode: {mode}")
+
+        if division:
+            # 各データセット内に含まれるL,Qをそれぞれの行として変換する
+            # 例:
+            #   {
+            # "userid"      : "user_id",
+            # "labels"      : int,      # ラベル (0~4)
+            # "grades"      : str,      # 成績 (A, B, C, D, F)
+            # "input_text"  : str,      # アンケート内容 (Lx-Qy: 回答内容)
+            #   }
+            # -> 各カラムを15(L1~L15) * 5(Q1) の行に展開する
+            self.logger.info("Dividing dataset into Lx-Qy format...")
+            tmp = self.dataset.copy()
+            self.dataset = []  # 元のデータセットをクリア
+            for sample in tmp:
+                userid = sample["userid"]
+                grades = sample["grades"]
+                labels = sample["labels"]
+                for c in range(1, 16):
+                    for q in self.q_filter:
+                        cource_key = f"L{c}"
+                        question_key = f"Q{q}"
+                        ans = sample[cource_key][question_key]
+                        self.dataset.append(
+                            {
+                                "userid": userid,
+                                "labels": labels,
+                                "grades": grades,
+                                "input_text": f"{cource_key}-{question_key}: {ans}",
+                            }
+                        )
+            if mode == "train" & add_extended:
+                # 学習用データセットに拡張データを追加
+                ext_df = pd.read_csv(Path(dataset_path) / "extdata.csv")
+                for _, row in ext_df.iterrows():
+                    # 拡張データの行を追加
+                    # raw["grade"]に，(0~4)のラベルが含まれている
+                    # このとき，4:A, 3:B, 2:C, 1:D, 0:F に対応しているため，
+                    # label : 4->0 , 3->1, 2->2, 1->3, 0->4と変換，
+                    # grades : 4->A, 3->B, 2->C, 1->D, 0->Fと変換
+                    ext_label_map = {0: 4, 1: 3, 2: 2, 3: 1, 4: 0}
+                    label = ext_label_map.get(row["grade"], 4)  # デフォルトは4 (F)
+                    ext_graded_map = {
+                        0: "F",
+                        1: "D",
+                        2: "C",
+                        3: "B",
+                        4: "A",
+                    }
+                    grade = ext_graded_map.get(row["grade"], "F")  # デフォルトはF
+
+                    self.dataset.append(
+                        {
+                            "userid": "ext_user",  # 拡張データのユーザID
+                            "labels": label,
+                            "grades": grade,
+                            "input_text": row["answer"],
+                        }
+                    )
 
         self.logger.info(f"Dataset build done: total={len(self.dataset)}, ")
 
@@ -286,7 +347,7 @@ class GradePredictionDataset(Dataset):
                         # アンケート内容を連結したテキスト
                         # 各講義回の回答を "L1-Q1: 回答内容" の形式で連結
                 }
-                
+
         else:
             samples : list[dict]
                 ユーザ単位のネスト辞書リスト
@@ -302,7 +363,7 @@ class GradePredictionDataset(Dataset):
                     },
                     ...
                 }
-        
+
         """
 
         # フィルタ掛け
@@ -337,7 +398,7 @@ class GradePredictionDataset(Dataset):
         for uid, block in pivot.groupby(level=0):
             grade_val = df.loc[df["userid"] == uid, "grade"].iloc[0]
             label_val = df.loc[df["userid"] == uid, "label"].iloc[0]
-            
+
             # ================================================================
             # 連結するか，ネスト構造を保持するか
             # concat=True なら，テキストを連結して1つの文字列にする
@@ -433,10 +494,13 @@ class GradePredictionCollator:
         self.preamble = (
             "あなたは大学の教授であり、学生の成績を決定する役割を担っています。"
             "以下に示す学生の講義後アンケートを読み、成績を高い順に A、B、C、D、F のいずれかに分類してください。\n"
-            "L は講義回、Q は質問番号を示します（例: L1-Q1）。\n"
+            "成績は出力例のような形式で出力してください。\n"
+            "入力文のL は講義回、Q は質問番号を示します（例: L1-Q1）。\n"
             f"アンケートの質問文は、\n{question}です。"
             "回答が NaN の場合は未回答です。\n"
             "出力には A、B、C、D、F のいずれかを含めてください。\n"
+            "出力例:\n"
+            "この学生の成績は、Aです。\n"
             "アンケート内容："
         )
         logger.info(
@@ -468,7 +532,8 @@ class GradePredictionCollator:
             }
         """
         prompts = [
-            f"[INST] {self.preamble}\n{ex['input_text']}\n[/INST]\n" for ex in features
+            f"[INST] {self.preamble}\n\n{ex['input_text']}\n[/INST]\n"
+            for ex in features
         ]
         grades = [ex["grades"] for ex in features]
         tgt_str = [f" この学生の成績は、{g}です。" for g in grades]
@@ -495,18 +560,33 @@ class GradePredictionCollator:
             eos = [self.tokenizer.eos_token_id]
             if self.include_target:
                 ids = p_ids + t_ids + eos
+                lbl = [-100] * len(p_ids) + t_ids + eos
             else:
                 ids = p_ids + eos
-                t_ids = []  # ラベル長合わせ
-            lbl = [-100] * len(p_ids) + t_ids + eos
+                lbl = [-100] * len(ids)
             input_ids.append(torch.tensor(ids, dtype=torch.long))
             labels.append(torch.tensor(lbl, dtype=torch.long))
 
-        batch_ids = pad_sequence(
-            input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
-        )
-        batch_lbl = pad_sequence(labels, batch_first=True, padding_value=-100)
-        attn_mask = batch_ids.ne(self.tokenizer.pad_token_id).long()
+        # もし左パディングなら
+        if self.tokenizer.padding_side == "left":
+            max_len = max(len(ids) for ids in input_ids)
+            batch_ids = torch.full(
+                (len(input_ids), max_len), self.tokenizer.pad_token_id, dtype=torch.long
+            )
+            batch_lbl = torch.full((len(labels), max_len), -100, dtype=torch.long)
+
+            for i, (ids, lbl) in enumerate(zip(input_ids, labels)):
+                batch_ids[i, -len(ids) :] = torch.tensor(ids)
+                batch_lbl[i, -len(lbl) :] = torch.tensor(lbl)
+
+            attn_mask = batch_ids.ne(self.tokenizer.pad_token_id).long()
+
+        else:
+            batch_ids = pad_sequence(
+                input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
+            )
+            batch_lbl = pad_sequence(labels, batch_first=True, padding_value=-100)
+            attn_mask = batch_ids.ne(self.tokenizer.pad_token_id).long()
 
         self.logger.debug("Collating Done")
 
@@ -516,11 +596,14 @@ class GradePredictionCollator:
             self.max_tokens,
         )
 
+        # enc_tgt["input_ids"] をtorch.tensorに変換して保持
+        target_ids = torch.tensor(enc_tgt["input_ids"], dtype=torch.long)
+
         return {
             "input_ids": batch_ids,
             "attention_mask": attn_mask,
             "labels": batch_lbl,
-            # "grade_str": grades,  # デバッグ用にtarget文字列も返す
+            "target_ids": target_ids,  #!<追加> ★ 真値を保持
         }
 
     def get_prompt(self, features: dict[str, Any]) -> str:
@@ -533,4 +616,3 @@ class GradePredictionCollator:
         ]
 
         return prompts
-
