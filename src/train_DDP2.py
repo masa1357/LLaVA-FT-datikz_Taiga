@@ -350,7 +350,7 @@ def main():
     # データセットを読み込む
     dataset_path = "./data/"
 
-    all_extend = True  # 全行展開バージョンを使用するかどうか
+    all_extend = False  # 全行展開バージョンを使用するかどうか
     if all_extend:
         # 全行展開バージョン
         train_dataset = GradePredictionDataset(
@@ -358,6 +358,7 @@ def main():
             concatenate=False,
             mode="train",
             division=True,  # 全行展開
+            # add_extended=True,  #? 追加データの有無
         )
         eval_dataset = GradePredictionDataset(
             dataset_path=dataset_path,
@@ -371,8 +372,7 @@ def main():
             question_filter=[1],
             concatenate=True,
             mode="train",
-            add_extended=True,  #? 追加データの有無
-        )
+            )
         eval_dataset = GradePredictionDataset(
             dataset_path=dataset_path,
             question_filter=[1],
