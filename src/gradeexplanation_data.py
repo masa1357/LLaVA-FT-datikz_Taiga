@@ -474,14 +474,14 @@ class GradeExplanationDataset(Dataset):
             # --- 2) 長い順に削減 -------------------------------
             token_info.sort(key=lambda x: len(x[1]), reverse=True)
             idx = 0
-            while total > max_tokens and idx < len(token_info):
+            while total_tokens > max_tokens and idx < len(token_info):
                 entry = token_info[idx][1]
                 if len(entry) > 1:
                     if truncate_end == "right":
                         entry.pop()
                     else:
                         entry.pop(0)
-                    total -= 1
+                    total_tokens -= 1
                 else:
                     idx += 1  # 次へ
 
