@@ -485,15 +485,29 @@ class GradeExplanationDataset(Dataset):
             #     else:
             #         idx += 1  # 次へ
 
+            ELLIPSIS_TOKENS = self.tokenizer.encode("...", add_special_tokens=False)
+            ELLIPSIS_LEN    = len(ELLIPSIS_TOKENS) 
+
             while total_tokens > max_tokens:
                 # 今回だけの長さ順
                 token_info.sort(key=lambda x: len(x[1]), reverse=True)
                 entry_tokens = token_info[0][1]           # 現在最長
-                if len(entry_tokens) == 1:                # すべて長さ1なら終了
+                
+                # これ以上削れない（エリプシスだけ残っている or 長さ不足）
+                if len(entry_tokens) <= ELLIPSIS_LEN:
                     break
-                pop_idx = -1 if truncate_end == "right" else 0
-                entry_tokens.pop(pop_idx)
-                total_tokens -= 1
+                
+                # ① 末尾に ... が 既に 付いているか確認
+                if entry_tokens[-ELLIPSIS_LEN:] == ELLIPSIS_TOKENS:
+                    # ② 既に ... がある → その直前を削る
+                    del entry_tokens[-ELLIPSIS_LEN - 1]
+                    total_tokens -= 1
+                else:
+                    # ③ まだ無ければ 末尾1トークンを ... に置換
+                    entry_tokens.pop()                       # 1 トークン削除
+                    entry_tokens.extend(ELLIPSIS_TOKENS)     # ... を追加
+                    # pop と extend で ( -1 + ELLIPSIS_LEN ) だけ総トークンが増減
+                    total_tokens += (ELLIPSIS_LEN - 1)
 
             #! ライブラリ追加したらこっちのほうが計算量が少なくなる
             # import heapq
