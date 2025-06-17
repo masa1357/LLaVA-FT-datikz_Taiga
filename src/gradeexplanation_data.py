@@ -413,7 +413,7 @@ class GradeExplanationDataset(Dataset):
                 samples.append(entry)
         return samples
     
-    def trim_dataset(self, dataset) -> None:
+    def trim_dataset(self) -> None:
         """
         データセット内の各回答を最大トークン数に収まるように切り詰める
         L1-Q1 - L15-Q5までのそれぞれの文章長を取得し，各文章を最大トークン数に収まるように切り詰める
@@ -442,6 +442,7 @@ class GradeExplanationDataset(Dataset):
             切り詰めたデータセット
         
         """
+        dataset = self.dataset
         max_tokens = self.max_tokens
         truncate_end = "right"  # 切り詰める方向（"right" or "left"）
 
@@ -488,7 +489,9 @@ class GradeExplanationDataset(Dataset):
             for (c_key, q_key), toks in token_info:
                 sample[c_key][q_key] = self.tokenizer.decode(toks, skip_special_tokens=True)
 
-        return dataset  # 破壊的に変更済み。コピーしたい場合は deepcopy する            
+        self.dataset = dataset
+        del dataset  # メモリ解放
+                
 
 
 
