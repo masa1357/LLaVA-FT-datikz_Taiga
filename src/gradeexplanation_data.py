@@ -473,17 +473,46 @@ class GradeExplanationDataset(Dataset):
             )
             # --- 2) 長い順に削減 -------------------------------
             token_info.sort(key=lambda x: len(x[1]), reverse=True)
-            idx = 0
-            while total_tokens > max_tokens and idx < len(token_info):
-                entry = token_info[idx][1]
-                if len(entry) > 1:
-                    if truncate_end == "right":
-                        entry.pop()
-                    else:
-                        entry.pop(0)
-                    total_tokens -= 1
-                else:
-                    idx += 1  # 次へ
+            # idx = 0
+            # while total_tokens > max_tokens and idx < len(token_info):
+            #     entry = token_info[idx][1]
+            #     if len(entry) > 1:
+            #         if truncate_end == "right":
+            #             entry.pop()
+            #         else:
+            #             entry.pop(0)
+            #         total_tokens -= 1
+            #     else:
+            #         idx += 1  # 次へ
+
+            while total_tokens > max_tokens:
+                # 今回だけの長さ順
+                token_info.sort(key=lambda x: len(x[1]), reverse=True)
+                entry_tokens = token_info[0][1]           # 現在最長
+                if len(entry_tokens) == 1:                # すべて長さ1なら終了
+                    break
+                pop_idx = -1 if truncate_end == "right" else 0
+                entry_tokens.pop(pop_idx)
+                total_tokens -= 1
+
+            #! ライブラリ追加したらこっちのほうが計算量が少なくなる
+            # import heapq
+
+            # # token_info: [((c_key,q_key), tokens), ...]  # 前段で生成済み
+            # heap = [(-len(toks), i) for i, (_, toks) in enumerate(token_info)]
+            # heapq.heapify(heap)
+
+            # while total_tokens > max_tokens:
+            #     neg_len, i = heapq.heappop(heap)          # 最長を取得
+            #     toks = token_info[i][1]
+            #     if len(toks) == 1:                        # これ以上削れない
+            #         continue
+            #     pop_idx = -1 if truncate_end == "right" else 0
+            #     toks.pop(pop_idx)                         # 1トークン削除
+            #     total_tokens -= 1
+            #     heapq.heappush(heap, (-len(toks), i))     # 更新して再投入
+
+
 
             # --- 3) 文章を戻す --------------------------------
             for (c_key, q_key), toks in token_info:
