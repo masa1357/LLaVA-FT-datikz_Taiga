@@ -11,6 +11,7 @@
 # ================ 標準ライブラリ ================
 import os
 import sys
+import re
 import argparse
 from logging import (
     getLogger,
@@ -40,6 +41,7 @@ from moverscore_v2 import word_mover_score, get_idf_dict
 from transformers import Trainer, TrainingArguments, set_seed, GenerationConfig
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers.trainer_utils import EvalPrediction, PredictionOutput
+from sklearn.metrics import confusion_matrix
 
 # ================ プロジェクト内（ローカル） ================
 from util import load_model, set_seed, set_logger
@@ -122,7 +124,7 @@ def evaluate(
 
     if show_samples > 0:
         logger.info("✅️ Visualize sample answers")
-        for i in range(min(show_samples, len(pred_text))):
+        for i in range(show_samples):
             msg = "\n".join(
                 [
                     "========================",
@@ -134,6 +136,7 @@ def evaluate(
                 ]
             )
             logger.info(msg)
+            msg = ""
 
     # Metrics #1    : BLEU
     bleu = sacrebleu.corpus_bleu(pred_text, [labels_text]).score
@@ -159,14 +162,27 @@ def evaluate(
     # -> target内には[A,B,C,D,F]のいずれかを含む文字列が入っている
     # predictionとtargetから最初に出現する["A", "B", "C", "D", "F"]を抽出して比較する
     def extract_grade(text: str) -> str:
-        for grade in ["A", "B", "C", "D", "F"]:
-            if grade in text:
-                return grade
+        # 1. 文字列から[/INST]以前の部分を削除
+        text = text.split("[/INST]")[-1]
+
+        # 2. 文字列から成績を抽出
+        # 「成績は、Xです」の X を正規表現で抜く
+        m = re.search(r"成績は、([A-D]|F)です", text)
+        if m:
+            return m.group(1)
+        else:
+            for grade in ["A", "B", "C", "D", "F"]:
+                if grade in text:
+                    return grade
         return "F"  # デフォルトは F
 
     pred_grades = [extract_grade(text) for text in pred_text]
     label_grades = [extract_grade(text) for text in labels_text]
     accuracy = np.mean(np.array(pred_grades) == np.array(label_grades)) * 100
+    cf = confusion_matrix(
+        label_grades, pred_grades, labels=["A", "B", "C", "D", "F"]
+    )
+    
 
     # 予測に成功しているケースをいくつか表示
     if show_samples > 0:
@@ -204,6 +220,7 @@ def evaluate(
         "bleu": round(bleu, 4),
         "moverscore": round(moverscore, 4),
         "accuracy": round(accuracy, 4),
+        "confusion_matrix": cf
     }
 
 
@@ -290,6 +307,12 @@ def main():
         default="lora-elyza-reflection_test",
         help="Run name for experiment tracking",
     )
+    parser.add_argument(
+        "--logfile",
+        type=str,
+        default="NA",
+        help="File name for logging (default: NA, no file logging)",
+    )
 
     args = parser.parse_args()
     set_seed(42)
@@ -327,32 +350,35 @@ def main():
     # データセットを読み込む
     dataset_path = "./data/"
 
-    train_dataset = GradePredictionDataset(
-        dataset_path=dataset_path,
-        question_filter=[1],
-        concatenate=True,
-        mode="train",
-    )
-    eval_dataset = GradePredictionDataset(
-        dataset_path=dataset_path,
-        question_filter=[1],
-        concatenate=True,
-        mode="valid",
-    )
-
-    # 全行展開バージョン
-    # train_dataset = GradePredictionDataset(
-    #     dataset_path=dataset_path,
-    #     concatenate=True,
-    #     mode="train",
-    #     division=True,  # 全行展開
-    # )
-    # eval_dataset = GradePredictionDataset(
-    #     dataset_path=dataset_path,
-    #     concatenate=True,
-    #     mode="valid",
-    #     division=True,  # 全行展開
-    # )
+    all_extend = True  # 全行展開バージョンを使用するかどうか
+    if all_extend:
+        # 全行展開バージョン
+        train_dataset = GradePredictionDataset(
+            dataset_path=dataset_path,
+            concatenate=False,
+            mode="train",
+            division=True,  # 全行展開
+        )
+        eval_dataset = GradePredictionDataset(
+            dataset_path=dataset_path,
+            concatenate=False,
+            mode="valid",
+            division=True,  # 全行展開
+        )
+    else:
+        train_dataset = GradePredictionDataset(
+            dataset_path=dataset_path,
+            question_filter=[1],
+            concatenate=True,
+            mode="train",
+            add_extended=True,  #? 追加データの有無
+        )
+        eval_dataset = GradePredictionDataset(
+            dataset_path=dataset_path,
+            question_filter=[1],
+            concatenate=True,
+            mode="valid",
+        )
 
     logger.info(f"len(train_dataset): {len(train_dataset)}")
     logger.info(f"len(eval_dataset): {len(eval_dataset)}")
@@ -360,20 +386,36 @@ def main():
     train_logger = set_logger(name="CollateTrain", level=INFO)
     eval_logger = set_logger(name="CollateEval", level=INFO)
 
-    train_collator = GradePredictionCollator(
-        tokenizer,
-        max_tokens=args.max_words,
-        include_target=True,
-        logger=train_logger,
-        question_filter=[1],  # 全行展開版はコメントアウト
-    )
-    eval_collator = GradePredictionCollator(
-        tokenizer,
-        max_tokens=args.max_words,
-        include_target=False,
-        logger=eval_logger,
-        question_filter=[1],  # 全行展開版はコメントアウト
-    )
+    if all_extend:
+        logger.info("Using all-extended version of the dataset (all_extend=True).")
+        train_collator = GradePredictionCollator(
+            tokenizer,
+            max_tokens=args.max_words,
+            include_target=True,
+            logger=train_logger,
+        )
+        eval_collator = GradePredictionCollator(
+            tokenizer,
+            max_tokens=args.max_words,
+            include_target=False,
+            logger=eval_logger,
+        )
+    else:
+        logger.info("Using standard version of the dataset (all_extend=False).")
+        train_collator = GradePredictionCollator(
+            tokenizer,
+            max_tokens=args.max_words,
+            include_target=True,
+            logger=train_logger,
+            question_filter=[1],
+        )
+        eval_collator = GradePredictionCollator(
+            tokenizer,
+            max_tokens=args.max_words,
+            include_target=False,
+            logger=eval_logger,
+            question_filter=[1],
+        )
 
     logger.info(
         f"custom_collate_fn initialized with processor: {type(tokenizer).__name__}"
@@ -402,13 +444,14 @@ def main():
     # !訓練前にモデルを使用すると，訓練できいバグが発生
     # -> 訓練の設定前に推論を行い，モデルを再度ロードし直すことで回避
     # ================================================================
-    logger.info(
-        """
-        =================================================
-        =================================================
-        🔄Start Evaluation before training...
-        """
+    msg = "\n".join(
+        [
+            "=================================================",
+            "=================================================",
+            "🔄 Start Evaluation before training...",
+        ]
     )
+    logger.info(msg)
 
     pred_text = []
     input_text = []
@@ -486,6 +529,15 @@ def main():
     logger.info(
         f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\nAccuracy\t: {metrics['accuracy']}\n"
     )
+    msg = "\n".join(
+        [
+            "=================================================",
+            "confusion_matrix:",
+            f"{metrics['confusion_matrix']}",
+            "=================================================",
+        ]
+    )
+    logger.info(msg)
     logger.info(
         "\n====================================\n===================================="
     )
@@ -604,131 +656,6 @@ def main():
     )
 
     # ================================================================
-    # 訓練前推論
-    # !バグ発生のため，一時コメントアウト
-    # ================================================================
-    # ! モデルの出力config ! 不要
-    # model.generation_config = GenerationConfig(
-    #     return_dict_in_generate=False,
-    #     output_scores=False,  # これも一緒に False にしておくと安全
-    #     do_sample=False,  # 評価では通常 OFF
-    #     max_new_tokens=128,  # 必要に応じて
-    # )
-
-    # logger.info(" Start Evaluation before training...")
-    # trainer.data_collator = eval_collator
-    # pred_result = trainer.predict(eval_dataset)
-
-    # metrics = evaluate(pred_result, eval_dataset, tokenizer, logger=logger)
-    # logger.info(
-    #     f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\nAccuracy\t: {metrics['accuracy']}\n"
-    # )
-    # logger.info("=================================================")
-    # logger.info("=================================================")
-    # logger.info("🔄Start Evaluation before training...")
-    # trainer.data_collator = eval_collator
-    # pred_result = trainer.predict(eval_dataset)
-    # model.eval()
-    # pred_text = []
-    # input_text = []
-    # loader = DataLoader(
-    #     eval_dataset,
-    #     batch_size=args.batch_size,
-    #     shuffle=False,
-    #     collate_fn=eval_collator,
-    # )
-    # # modelのdeviceを設定
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model.to(device)
-
-    # for batch in loader:
-    #     batch = {k: v.to(model.device) for k, v in batch.items()}
-    #     input_ids = batch["input_ids"]
-    #     attention_mask = batch["attention_mask"]
-
-    #     with torch.no_grad():
-    #         outputs = model.generate(
-    #             input_ids=input_ids,
-    #             attention_mask=attention_mask,
-    #             max_new_tokens=128,
-    #             do_sample=True,  # 推論時は通常Greedy
-    #             pad_token_id=tokenizer.pad_token_id,
-    #             eos_token_id=tokenizer.eos_token_id,
-    #         )
-
-    #     decoded_inputs = tokenizer.batch_decode(input_ids, skip_special_tokens=True)
-    #     decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-
-    #     input_text.extend(decoded_inputs)
-    #     pred_text.extend(decoded_outputs)
-
-    # trainer.generation_config = GenerationConfig(
-    #     max_new_tokens=64,
-    #     do_sample=False,  # 評価では通常 OFF
-    #     top_p=0.9,            # 必要に応じて
-    #     temperature=0.7,
-    #     pad_token_id=tokenizer.pad_token_id,
-    #     eos_token_id=tokenizer.eos_token_id,
-    #     # 分散推論の長さずれ防止
-    #     # synced_gpus=True,     # transformers>=4.34 なら有効
-    # )
-    # trainer.data_collator = eval_collator
-    # pred_output = trainer.predict(eval_dataset)        # DeepSpeed + ZeRO3 対応済み
-
-    # # pred_output.predictions: (n_batch, n_seq, seq_len)  or  object dtype
-    # pred_ids = pred_output.predictions
-
-    # # ① NumPy → list, ② 2 次元めがあるなら先頭系列を採用
-    # if isinstance(pred_ids, np.ndarray):
-    #     pred_ids = pred_ids.tolist()                   # dtype=object でも OK
-
-    # # 形状が [batch][alt][token] の場合、先頭 alt だけ残す
-    # if isinstance(pred_ids[0][0], (list, np.ndarray)):
-    #     pred_ids = [seqs[0] for seqs in pred_ids]      # beam=0 / sample=0
-
-    # decoded_outputs = tokenizer.batch_decode(
-    #     pred_ids,
-    #     skip_special_tokens=True,
-    # )
-    # # del pred_output, pred_ids
-    # # torch.cuda.empty_cache()
-
-    # input_ids_list = [example["input_ids"] for example in eval_dataset]  # list[list[int]]
-    # decoded_inputs = tokenizer.batch_decode(
-    #     input_ids_list,
-    #     skip_special_tokens=True,
-    # )
-
-    # # 結果を格納（Trainer.predictの形式に寄せたい場合）
-    # pred_result = {
-    #     "input_sentence": input_text,
-    #     "output_sentence": pred_text,
-    # }
-
-    # # logger.debug(f"pred_result elements\t:{pred_result._asdict().keys()}")
-    # # pred_text = tokenizer.batch_decode(
-    # #     pred_result.predictions, skip_special_tokens=True
-    # # )
-    # # labels_text = tokenizer.batch_decode(
-    # #     pred_result.label_ids, skip_special_tokens=True
-    # # )
-
-    # # logger.info("✅️ Visualize sample answers")
-    # # for i in range(5):
-    # #     logger.info(f"Sample {i}\t: ")
-    # #     logger.info(f"Predict\t: {pred_text[i]}")
-    # #     logger.info(f"Target\t: {labels_text[i]}")
-
-    # if acc.is_main_process:
-    #     metrics = evaluate(
-    #         pred_result, eval_dataset, tokenizer, show_samples=5, logger=logger
-    #     )
-    #     logger.info("✅ Evaluation before training completed successfully!")
-    #     logger.info(
-    #         f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\nAccuracy\t: {metrics['accuracy']}\n"
-    #     )
-
-    # ================================================================
     # 訓練
     # ================================================================
     logger.info("=================================================")
@@ -741,6 +668,15 @@ def main():
     trainer.data_collator = train_collator
     trainer.train()
     logger.info("✅ Model training has been completed successfully!")
+
+    # モデルの保存
+    file_path = args.output_dir + args.logfile
+    if args.logfile != "NA":
+        logger.info(f"Saving model to {file_path}")
+        model.save_pretrained(file_path)
+        tokenizer.save_pretrained(file_path)
+    else:
+        logger.info("No logfile specified, skipping model save.")
 
     # ================================================================
     # 訓練後推論
@@ -846,18 +782,18 @@ def main():
     #     pred_result.label_ids, skip_special_tokens=True
     # )
 
-    logger.info("✅️ Visualize sample answers")
-    for i in range(5):
-        msg = "\n".join(
-            [
-                "========================",
-                f"Sample {i}:",
-                f"Predict\t: {pred_text[i]}",
-                f"Target\t: {label_text[i]}",
-                "========================",
-            ]
-        )
-        logger.info(msg)
+    # logger.info("✅️ Visualize sample answers")
+    # for i in range(5):
+    #     msg = "\n".join(
+    #         [
+    #             "========================",
+    #             f"Sample {i}:",
+    #             f"Predict\t: {pred_text[i]}",
+    #             f"Target\t: {label_text[i]}",
+    #             "========================",
+    #         ]
+    #     )
+    #     logger.info(msg)
 
     metrics = evaluate(
         pred_result, eval_dataset, tokenizer, show_samples=5, logger=logger
@@ -866,6 +802,15 @@ def main():
     logger.info(
         f"Metrics\t:\nMoverScore\t: {metrics['moverscore']}\nAccuracy\t: {metrics['accuracy']}\n"
     )
+    msg = "\n".join(
+        [
+            "=================================================",
+            "confusion_matrix:",
+            f"{metrics['confusion_matrix']}",
+            "=================================================",
+        ]
+    )
+    logger.info(msg)
 
 
 if __name__ == "__main__":
