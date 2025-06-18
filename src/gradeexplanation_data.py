@@ -69,7 +69,7 @@ class GradeExplanationDataset(Dataset):
         division: bool = False,
         add_extended: bool = False,
         tokenizer=None,
-        max_tokens: int = 4096 - 330, # プロンプト長(330)を減算
+        max_tokens: int = 4096 - 330,  # プロンプト長(330)を減算
         trim: bool = True,
     ):
         """
@@ -415,7 +415,7 @@ class GradeExplanationDataset(Dataset):
                         entry[key] = {q: self.fill_token for q in qs_cols}
                 samples.append(entry)
         return samples
-    
+
     def trim_dataset(self) -> None:
         """
         データセット内の各回答を最大トークン数に収まるように切り詰める
@@ -443,7 +443,7 @@ class GradeExplanationDataset(Dataset):
         -------
         dataset : list[dict[str, Any]]
             切り詰めたデータセット
-        
+
         """
         dataset = self.dataset
         max_tokens = self.max_tokens
@@ -451,7 +451,9 @@ class GradeExplanationDataset(Dataset):
 
         for sample in dataset:
             # --- 1) 回答ごとの token 列を収集 -----------------
-            token_info: list[tuple[tuple[str, str], list[int]]] = []   # ((L?,Q?), tokens)
+            token_info: list[tuple[tuple[str, str], list[int]]] = (
+                []
+            )  # ((L?,Q?), tokens)
             for c in range(1, 16):
                 c_key = f"L{c}"
                 if c_key not in sample:
@@ -489,17 +491,17 @@ class GradeExplanationDataset(Dataset):
             #         idx += 1  # 次へ
 
             ELLIPSIS_TOKENS = self.tokenizer.encode("...", add_special_tokens=False)
-            ELLIPSIS_LEN    = len(ELLIPSIS_TOKENS) 
+            ELLIPSIS_LEN = len(ELLIPSIS_TOKENS)
 
             while total_tokens > max_tokens:
                 # 今回だけの長さ順
                 token_info.sort(key=lambda x: len(x[1]), reverse=True)
-                entry_tokens = token_info[0][1]           # 現在最長
-                
+                entry_tokens = token_info[0][1]  # 現在最長
+
                 # これ以上削れない（エリプシスだけ残っている or 長さ不足）
                 if len(entry_tokens) <= ELLIPSIS_LEN:
                     break
-                
+
                 # ① 末尾に ... が 既に 付いているか確認
                 if entry_tokens[-ELLIPSIS_LEN:] == ELLIPSIS_TOKENS:
                     # ② 既に ... がある → その直前を削る
@@ -507,10 +509,10 @@ class GradeExplanationDataset(Dataset):
                     total_tokens -= 1
                 else:
                     # ③ まだ無ければ 末尾1トークンを ... に置換
-                    entry_tokens.pop()                       # 1 トークン削除
-                    entry_tokens.extend(ELLIPSIS_TOKENS)     # ... を追加
+                    entry_tokens.pop()  # 1 トークン削除
+                    entry_tokens.extend(ELLIPSIS_TOKENS)  # ... を追加
                     # pop と extend で ( -1 + ELLIPSIS_LEN ) だけ総トークンが増減
-                    total_tokens += (ELLIPSIS_LEN - 1)
+                    total_tokens += ELLIPSIS_LEN - 1
 
             #! ライブラリ追加したらこっちのほうが計算量が少なくなる
             # import heapq
@@ -529,14 +531,14 @@ class GradeExplanationDataset(Dataset):
             #     total_tokens -= 1
             #     heapq.heappush(heap, (-len(toks), i))     # 更新して再投入
 
-
-
             # --- 3) 文章を戻す --------------------------------
             for (c_key, q_key), toks in token_info:
-                sample[c_key][q_key] = self.tokenizer.decode(toks, skip_special_tokens=True)
+                sample[c_key][q_key] = self.tokenizer.decode(
+                    toks, skip_special_tokens=True
+                )
 
         for sample in dataset:
-            # 各回答を連結，使わないキーを削除[仮コード] 
+            # 各回答を連結，使わないキーを削除[仮コード]
             lines = []
             for c in range(1, 16):
                 c_key = f"L{c}"
@@ -550,8 +552,6 @@ class GradeExplanationDataset(Dataset):
 
         self.dataset = dataset
         del dataset  # メモリ解放
-                
-
 
 
 class GradeExplanationCollator:
@@ -648,11 +648,11 @@ class GradeExplanationCollator:
             f"[INST] {self.preamble}\n\n{ex['input_text']}\n[/INST]\n"
             for ex in features
         ]
-        grades = [ex["grades"] for ex in features]
-        tgt_str = [f" この学生の成績は、{g}です。" for g in grades]
+        # tgt_str は features内のtargetに保存される
+        tgt_str = [ex["target"] for ex in features]
 
         self.logger.debug("prompt sample:\n%s", prompts[0][:500])
-        self.logger.debug("grade sample: %s", tgt_str[0][:50])
+        self.logger.debug("target sample: %s", tgt_str[0][:50])
 
         enc_prompt = self.tokenizer(
             prompts,
@@ -710,7 +710,12 @@ class GradeExplanationCollator:
         )
 
         # enc_tgt["input_ids"] をtorch.tensorに変換して保持
-        target_ids = torch.tensor(enc_tgt["input_ids"], dtype=torch.long)
+        # target_ids = torch.tensor(enc_tgt["input_ids"], dtype=torch.long)
+        seq_list = [torch.tensor(ids, dtype=torch.long) for ids in enc_tgt["input_ids"]]
+
+        target_ids = pad_sequence(
+            seq_list, batch_first=True, padding_value=self.tokenizer.pad_token_id
+        )
 
         return {
             "input_ids": batch_ids,
