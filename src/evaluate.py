@@ -2,7 +2,7 @@
 # evaluate.py
 # date: 2025/06/15
 # description:
-#   - モデルの評価を行う
+#   - モデルの評価を行う[未完成]
 #   - trainと異なり，ファイルからモデルを読み込んで評価することで，バグを防止
 # 対象モデル；
 #   - elyza/Llama-3-ELYZA-JP-8B

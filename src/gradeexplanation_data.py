@@ -69,7 +69,8 @@ class GradeExplanationDataset(Dataset):
         division: bool = False,
         add_extended: bool = False,
         tokenizer=None,
-        max_tokens: int = 4096,
+        max_tokens: int = 4096 - 330, # プロンプト長(330)を減算
+        trim: bool = True,
     ):
         """
         ファイルを読み込み，データセットを構成する
@@ -111,6 +112,8 @@ class GradeExplanationDataset(Dataset):
         # ----------- 前処理 & ネスト構築 -----------
         df[answer_col] = df[answer_col].apply(self._preprocess)
         self.dataset = self._build_nested(df)
+        if trim:
+            self.trim_dataset()  # 各回答を最大トークン数に収まるように切り詰める
 
         self.logger.info(
             f"Dataset init done. users={len(self.dataset)}, qs={self.q_filter}, "
