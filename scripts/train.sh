@@ -12,7 +12,7 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         CUDA_VISIBLE_DEVICES=0,1,2,3 \
         accelerate launch \
         --config_file ds_zero3.yaml \
-        src/train_DDP2.py \
+        src/train_DDP.py \
         --output_dir ./outputs/llama3-elyza-8b-lora \
         --epochs 3 \
         --batch_size 4 \
