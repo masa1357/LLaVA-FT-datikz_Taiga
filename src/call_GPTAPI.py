@@ -5,20 +5,23 @@
 #   - GPT APIを呼び出す
 # =====================================================================
 
-import json                               
-from logging import DEBUG                
-from pathlib import Path                  
+import json
+from logging import DEBUG, INFO
+from pathlib import Path
 
 # 外部ライブラリ
-from openai import OpenAI                 
-from transformers import AutoTokenizer    
+from openai import OpenAI
+from transformers import AutoTokenizer
+from tqdm import tqdm
+import torch
+import re
 
 # 自作モジュール／クラス（正しいパスに合わせて修正）
 from src.gradeexplanation_data import GradeExplanationDataset
-from src.util import set_logger                
+from src.util import set_logger
 
 # 型ヒント用 (任意)
-from typing import Any, Dict, List    
+from typing import Any, Dict, List
 
 # https://chatgpt.com/g/g-JuG2vFjqa-organization
 # OpenAI APIキーを設定
@@ -52,48 +55,69 @@ def load_openai_client(file_path):
 
     return client
 
-def call_gpt_api(client, model, prompt, seed=None, temperature=0, top_p=0.5, logger=None):
-        try:
-            chat_completion = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-                seed = seed,
-                temperature = temperature,
-                top_p = top_p,
-                n = 1,
-            )
-            return chat_completion.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Error processing prompt: {prompt}\n{e}")
-            return "ERROR"
-        
+
+def call_gpt_api(
+    client, model, prompt, seed=None, temperature=0, top_p=0.5, logger=None
+):
+    try:
+        chat_completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            seed=seed,
+            temperature=temperature,
+            top_p=top_p,
+            n=1,
+        )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Error processing prompt: {prompt}\n{e}")
+        return "ERROR"
+
+
+def extract_grade(text: str) -> str:
+    # 1. 文字列から[/INST]以前の部分を削除
+    text = text.split("[/INST]")[-1]
+
+    # 2. 文字列から成績を抽出
+    # 「成績は、Xです」の X を正規表現で抜く
+    m = re.search(r"成績は、([A-D]|F)です", text)
+    if m:
+        return m.group(1)
+    else:
+        for grade in ["A", "B", "C", "D", "F"]:
+            if grade in text:
+                return grade
+    return "F"  # デフォルトは F
+
+
 def main():
     # loggerの設定
     print("set logger")
-    logger = set_logger(level=DEBUG)
-
+    logger = set_logger(level=INFO)
 
     # tokenizerの設定
-    tokenizer = AutoTokenizer.from_pretrained("elyza/Llama-3-ELYZA-JP-8B", use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        "elyza/Llama-3-ELYZA-JP-8B", use_fast=True
+    )
 
     question_filter = [1, 2, 3, 4, 5]  # フィルタリングする質問番号
 
     data = GradeExplanationDataset(
         dataset_path=DATA_PATH,
         logger=logger,
-        question_filter= question_filter,
+        question_filter=question_filter,
         concatenate=False,
         mode="all",
         division=False,
         tokenizer=tokenizer,
         trim=True,
     )
-    
+
     # プロンプトの設定
     Q_TEXT = {
         1: "Q1:今日の内容を自分なりの言葉で説明してみてください\n",
@@ -106,21 +130,25 @@ def main():
     question = "".join(Q_TEXT[q] for q in question_filter)
 
     preamble = (
-        "あなたは大学の教授であり、学生の成績を決定する役割を担っています。"
-        "以下に示す学生の講義後アンケートを読み、成績を高い順に A、B、C、D、F のいずれかに分類してください。\n"
-        "さらに、その成績を決定した根拠を簡潔に説明してください。\n"
-        "成績と根拠は出力例のような形式で出力してください。\n"
-        "入力文のL は講義回、Q は質問番号を示します（例: L1-Q1）。\n"
-        f"アンケートの質問文は、\n{question}です。"
-        "回答が NaN の場合は未回答であり、回答文字数が一定以上ならば切り捨てています。\n"
-        "出力には、必ず A、B、C、D、F のいずれかを含めてください。\n"
+        "あなたは大学の教授であり、「情報科学」の講義を担当しています。\n"
+        "この講義では、学生に対して講義終了時にアンケートを実施し、学生の理解度や講義内容に対する意見を収集しています。\n"
+        "アンケートは以下の質問で構成されています。\n"
+        f"{question}"
+        "また，学生の成績は高い順にA, B, C, D, Fの5段階で評価されます。\n"
+        "このとき、学生のアンケートの回答文と成績から、なぜその学生がこの成績を取ったのか、根拠を回答形式に基づいて提示してください。\n"
+        "アンケート内容のL は講義回、Q は質問番号を示します（例: L1-Q1）。\n"
+        "アンケート内容が NaN の場合は未回答であり、回答文字数が一定以上ならば切り捨てています。\n"
+        "根拠は簡潔に、具体的な取り組みや意見に注目して提示してください。\n"
+        "【出力フォーマット】\n"
+        "この学生の成績は、<成績>です。理由は、<質問内容の要約>ためです。\n"
         "出力例:\n"
         "この学生の成績は、Aです。理由は、質問１において、講義内容を数式を用いて詳細に説明しており、講義内容の理解度が高いためです。\n"
         "アンケート内容："
     )
-    
+    preamble2 = "成績:"
+
     # モデル設定
-    model = "gpt-4o-2024-08-06" #"o1-2024-12-17"
+    model = "gpt-4o-2024-08-06"  # "o1-2024-12-17"
     # OpenAIクライアントのロード
     client = load_openai_client(API_PATH)
 
@@ -134,27 +162,37 @@ def main():
     logger.info(f"data keys: {data[0].keys() if data else 'No data available'}")
 
     # 生成
-    for sample in data:
-        prompt = f"{preamble}\n{sample['input_text']}\n"
+    for sample in tqdm(data):
+        prompt = f"{preamble}\n{sample['input_text']}\n{preamble2} {sample['grades']}\n"
         logger.debug(f"Prompt: {prompt}")
         out = call_gpt_api(
-            client, 
-            model, 
-            prompt, 
-            seed=42, 
-            temperature=0.5, 
-            top_p=0.5, 
-            logger=logger
+            client, model, prompt, seed=42, temperature=0, top_p=0.5, logger=logger
         )
         sample["target"] = out
         logger.info(f"Output: {out}")
 
     # 結果の保存
-    output_path = f"{DAATA_PATH}/GradeExplanationDataset_Qs{len(question_filter)}_trimmed.json"
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    
+    output_path = (
+        f"{DATA_PATH}/GradeExplanationDataset_Qs{len(question_filter)}_trimmed.pt"
+    )
+    torch.save(data, output_path)
+
+    # targetとgradesが一致しているか確認
+    error_count = 0
+    for sample in data:
+        if sample["target"] == "ERROR":
+            logger.error("Error in generating response for a sample.")
+        else:
+            # targetから成績を抽出
+            extracted_grade = extract_grade(sample["target"])
+            if extracted_grade != sample["grades"]:
+                error_count += 1
+                logger.error(
+                    f"Grade mismatch on {sample['userid']}: Expected {sample['grades']}, but got {extracted_grade}."
+                )
+
+    logger.info(f"Total errors found: {error_count}")
+
 
 if __name__ == "__main__":
     main()
-        
