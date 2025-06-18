@@ -83,6 +83,19 @@ class DummyFile:
         pass  # 何もしない
 
 
+# target_dataset内のuseridをキーにして，targetをdataに追加する
+def add_target_to_data(
+    data: GradeExplanationDataset, target_dataset
+) -> GradeExplanationDataset:
+    # Build a mapping from userid to target
+    userid_to_target = {item["userid"]: item["target"] for item in target_dataset}
+    for i in range(len(data)):
+        user_id = data[i]["userid"]
+        if user_id in userid_to_target:
+            data[i]["target"] = userid_to_target[user_id]
+    return data
+
+
 def evaluate(
     pred_result,
     eval_dataset,
@@ -310,10 +323,10 @@ def main():
         dataset_path, "GradeExplanationDataset_Qs5_trimmed.pt"
     )
 
-    dataset = torch.load(targetfile_path)
+    target_dataset = torch.load(targetfile_path)
     logger.info(f"Target loaded from {targetfile_path}")
-    logger.info(f"Target size: {len(dataset)}")
-    logger.info(f"Target sample: {dataset[0]}")
+    logger.info(f"Target size: {len(target_dataset)}")
+    logger.info(f"Target sample: {target_dataset[0]}")
 
     train_dataset = GradeExplanationDataset(
         dataset_path=dataset_path,
@@ -333,8 +346,14 @@ def main():
         trim=True,
     )
 
+    # target_datasetのtargetをtrain_datasetとeval_datasetに追加
+    train_dataset = add_target_to_data(train_dataset, target_dataset)
+    eval_dataset = add_target_to_data(eval_dataset, target_dataset)
+
     logger.info(f"len(train_dataset): {len(train_dataset)}")
     logger.info(f"len(eval_dataset): {len(eval_dataset)}")
+    logger.info(f"train keys: {list(train_dataset[0].keys())}")
+    logger.info(f"eval keys: {list(eval_dataset[0].keys())}")
 
     train_logger = set_logger(name="CollateTrain", level=INFO)
     eval_logger = set_logger(name="CollateEval", level=INFO)
