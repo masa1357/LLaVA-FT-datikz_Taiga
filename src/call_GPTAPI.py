@@ -43,7 +43,7 @@ def load_openai_client(file_path):
         OpenAIクライアントのインスタンス
     """
 
-    with open('./APIkey.txt') as f:
+    with open(API_PATH) as f:
         api_key = f.read()
 
     client = OpenAI(
@@ -87,8 +87,8 @@ def main():
         dataset_path=DATA_PATH,
         logger=logger,
         question_filter= question_filter,
-        cancatenate=False,
-        mode="all"
+        concatenate=False,
+        mode="all",
         division=False,
         tokenizer=tokenizer,
         trim=True,
@@ -129,6 +129,9 @@ def main():
         logger.debug("Debug mode: Using a small subset of data for testing.")
         # デバッグ用にデータの最初の10件を使用
         data = data[:10]
+
+    # データの要素を確認
+    logger.info(f"data keys: {data[0].keys() if data else 'No data available'}")
 
     # 生成
     for sample in data:

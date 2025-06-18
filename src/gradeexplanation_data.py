@@ -535,6 +535,19 @@ class GradeExplanationDataset(Dataset):
             for (c_key, q_key), toks in token_info:
                 sample[c_key][q_key] = self.tokenizer.decode(toks, skip_special_tokens=True)
 
+        for sample in dataset:
+            # 各回答を連結，使わないキーを削除[仮コード] 
+            lines = []
+            for c in range(1, 16):
+                c_key = f"L{c}"
+                if c_key not in sample:
+                    continue
+                for qn in self.q_filter:
+                    q_key = f"Q{qn}"
+                    ans = sample[c_key].get(q_key, "")
+                    lines.append(f"{c_key}-{q_key}: {ans}")
+            sample["input_text"] = "\n".join(lines)
+
         self.dataset = dataset
         del dataset  # メモリ解放
                 
