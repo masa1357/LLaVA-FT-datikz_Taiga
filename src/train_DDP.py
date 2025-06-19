@@ -350,6 +350,10 @@ def main():
     # データセットを読み込む
     dataset_path = "./data/"
 
+
+    train_logger = set_logger(name="CollateTrain", level=INFO)
+    eval_logger = set_logger(name="CollateEval", level=INFO)
+
     all_extend = False  # 全行展開バージョンを使用するかどうか
     if all_extend:
         # 全行展開バージョン
@@ -359,6 +363,7 @@ def main():
             mode="train",
             division=True,  # 全行展開
             # add_extended=True,  #? 追加データの有無
+            logger=train_logger,  # ロガーを渡す
         )
         eval_dataset = GradePredictionDataset(
             dataset_path=dataset_path,
@@ -383,8 +388,6 @@ def main():
     logger.info(f"len(train_dataset): {len(train_dataset)}")
     logger.info(f"len(eval_dataset): {len(eval_dataset)}")
 
-    train_logger = set_logger(name="CollateTrain", level=INFO)
-    eval_logger = set_logger(name="CollateEval", level=INFO)
 
     if all_extend:
         logger.info("Using all-extended version of the dataset (all_extend=True).")

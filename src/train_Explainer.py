@@ -355,6 +355,10 @@ def main():
     logger.info(f"train keys: {list(train_dataset[0].keys())}")
     logger.info(f"eval keys: {list(eval_dataset[0].keys())}")
 
+    logger.info(
+        f"train_dataset[0]: {train_dataset[0]}"
+    )  # -> train_dataset[0]: {'input_text': '...', 'target': 'A', ...}
+
     train_logger = set_logger(name="CollateTrain", level=INFO)
     eval_logger = set_logger(name="CollateEval", level=INFO)
 
@@ -672,6 +676,14 @@ def main():
         "label_sentence": label_text,
     }
 
+    # pred_resultをファイルに保存
+    save_path = os.path.join(args.output_dir, "pred_result_after_training.json")
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(pred_result, f, ensure_ascii=False, indent=4)
+    logger.info(f"Prediction results saved to {save_path}")
+
     metrics = evaluate(
         pred_result, eval_dataset, tokenizer, show_samples=5, logger=logger
     )
@@ -691,4 +703,7 @@ def main():
 
 
 if __name__ == "__main__":
+    print("=" * 50)
+    print("🚀 train_Explainer.py")
+    print("=" * 50)
     main()
