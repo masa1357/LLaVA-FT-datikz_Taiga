@@ -30,6 +30,11 @@ from typing import Any, Dict, List
 API_PATH = "./data/APIkey.txt"
 DATA_PATH = "./data/"
 
+DEFAULT_PROMPT = (
+    "あなたは大学講義『情報科学』で収集されたアンケートの根拠説明アシスタントです。"
+    "回答はすべて日本語で書き、個人情報と不適切表現を含めてはいけません。"
+)
+
 
 def load_openai_client(file_path):
     """
@@ -57,12 +62,16 @@ def load_openai_client(file_path):
 
 
 def call_gpt_api(
-    client, model, prompt, seed=None, temperature=0, top_p=0.5, logger=None
+    client, model, prompt, seed=None, temperature=0, top_p=0.5, logger=None, system_prompt:str = DEFAULT_PROMPT
 ):
     try:
         chat_completion = client.chat.completions.create(
             model=model,
             messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
                 {
                     "role": "user",
                     "content": prompt,
@@ -195,6 +204,108 @@ def main():
 
     logger.info(f"Total errors found: {error_count}")
 
+def main2():
+    """
+    ChatGPT APIを呼び出して、成績説明を生成するメイン関数
+    main()との違いは，拡張データセットに対する処理であること
+    -> 読み込み先，プロンプトが異なる
+    """
+    print("set logger")
+    logger = set_logger(level=DEBUG)
+
+    # データの読み込み
+    file = Path("data/GradeExplanationDataset_Extend.jsonl")
+    with file.open("r", encoding="utf-8") as f:
+        generated_data = [json.loads(line) for line in f]
+    logger.info(f"Loaded {len(generated_data)} samples from {file}")
+
+    # プロンプトの設定
+    Q_TEXT = {
+        1: "今日の内容を自分なりの言葉で説明してみてください\n",
+        2: "今日の内容で、分かったこと・できたことを書いてください\n",
+        3: "今日の内容で、分からなかったこと・できなかったことを書いてください\n",
+        4: "質問があれば書いてください\n",
+        5: "今日の授業の感想や反省を書いてください\n",
+    }
+
+    preamble = (
+        "以下の文章は、大学の講義『情報科学』における学生のアンケート回答と、最終成績です。\n"
+        "これを参考に、なぜ学生がこの成績を取ったのか、根拠を回答形式に基づいて提示してください。\n"
+        "アンケート内容のL は講義回を示します（例: L1）。\n"
+        "根拠は簡潔に、具体的な取り組みや意見に注目して提示してください。\n"
+        "■ ルール\n"
+        "1. 回答はすべて日本語で書き、個人情報と不適切表現を含めてはいけません。\n"
+        "2. 成績は高い順にA, B, C, D, Fの5段階で評価され、Fは単位不認定を意味します。\n"
+        "3. 回答文字数は300文字、1〜2 文までに控えてください。\n"
+        "4. 回答は以下に提示するフォーマットに従ってください。\n"
+        "出力例:\n"
+        "この学生の成績は、Aです。理由は、質問１において、講義内容を数式を用いて詳細に説明しており、講義内容の理解度が高いためです。\n"
+        "### 出力フォーマット\n"
+        "この学生の成績は、<成績>です。理由は、<成績の根拠>ためです。\n"
+        "---\n"
+        "以下はアンケートの質問と学生のアンケート回答，成績です。\n"
+        "質問内容:{question}\n"
+        "アンケート内容：{Answer}\n"
+        "成績: {grades}\n"
+    )
+
+    # モデル設定
+    model = "gpt-4o-2024-08-06"  # "o1-2024-12-17"
+    # OpenAIクライアントのロード
+    client = load_openai_client(API_PATH)
+
+    # test(logger levelが DEBUG の場合のみ)
+    if logger.level == DEBUG:
+        logger.debug("Debug mode: Using a small subset of data for testing.")
+        # デバッグ用にデータの最初の10件を使用
+        data = data[:10]
+
+    # データの要素を確認
+    logger.info(f"data keys: {data[0].keys() if data else 'No data available'}")
+
+    # 生成
+    for sample in tqdm(data):
+        question = Q_TEXT[sample["question"]]
+        lec = sample["lecture"]
+        grades = sample["grades"]
+        answer = sample["target"]
+        
+        answer = lec + answer
+        prompt = preamble.format(
+            question=question, Answer=answer, grades=grades
+        )
+
+        logger.debug(f"Prompt: {prompt}")
+        out = call_gpt_api(
+            client, model, prompt, seed=42, temperature=0, top_p=0.5, logger=logger
+        )
+        sample["target"] = out
+        logger.info(f"Output: {out}")
+
+    # 結果の保存
+    output_path = (
+        f"{DATA_PATH}/GradeExplanationDataset_Extended_data.pt"
+    )
+    torch.save(data, output_path)
+
+    # targetとgradesが一致しているか確認
+    error_count = 0
+    for i, sample in enumerate(data):
+        if sample["target"] == "ERROR":
+            logger.error("Error in generating response for a sample.")
+        else:
+            # targetから成績を抽出
+            extracted_grade = extract_grade(sample["target"])
+            if extracted_grade != sample["grades"]:
+                error_count += 1
+                logger.error(
+                    f"Grade mismatch {i}th case: Expected {sample['grades']}, but got {extracted_grade}."
+                )
+
+    logger.info(f"Total errors found: {error_count}")
+
+
+
 
 if __name__ == "__main__":
-    main()
+    main2()
