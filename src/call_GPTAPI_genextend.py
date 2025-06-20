@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import json
 import logging
+from logging import INFO
 import random
 import re
 import time
+from itertools import cycle, islice
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 # --- 外部ライブラリ ----------------------------------------------------
-from openai import OpenAI, error as oai_err
+from openai import OpenAI, APIError, RateLimitError, APIConnectionError
 from transformers import AutoTokenizer
 import torch
 
@@ -39,9 +41,15 @@ MAX_RETRY = 5           # GPT 呼び出しの最大リトライ回数
 BACKOFF_BASE = 2        # 2^n 秒で指数バックオフ
 SEED = 42               # 乱数シード（再現用）
 
-# ----------------------------------------------------------------------
+TOTAL_API_CALLS = 4000  # 4000 × 5 行 = 2 万行
+
+MIN_ANS = 8  # 入力回答 8〜10 件を許容
+TARGET_OUT_LINES = 5
+
+# ================================================================
 # Few‑Shot 例（固定）
-# ----------------------------------------------------------------------
+# ================================================================
+
 GOOD_EXAMPLES = (
     "入力:\n"
     "携帯やpcは音声、文章、写真を伝える。現在の通信技術に至るまでに、さまざまな技術が生み出され用いられた。\n"
@@ -69,8 +77,6 @@ SYSTEM_PROMPT = (
 def load_openai_client(file_path: Path) -> OpenAI:
     api_key = file_path.read_text().strip()
     return OpenAI(api_key=api_key)
-
-
 
 def call_gpt_api(
     client: OpenAI,
@@ -100,7 +106,7 @@ def call_gpt_api(
                 **({"seed": seed} if seed is not None else {}),
             )
             return resp.choices[0].message.content
-        except (oai_err.RateLimitError, oai_err.APIError, oai_err.APIConnectionError) as exc:
+        except (RateLimitError, APIError, APIConnectionError) as exc:
             wait = BACKOFF_BASE ** (attempt - 1) + random.random()
             if logger:
                 logger.warning("%s: retry %d/%d after %.1fs", exc.__class__.__name__, attempt, MAX_RETRY, wait)
@@ -112,23 +118,27 @@ def call_gpt_api(
     return None
 
 
-# ================================================================
-# ヘルパ
-# ================================================================
-def extract_grade(text: str) -> str:
-    # 1. 文字列から[/INST]以前の部分を削除
-    text = text.split("[/INST]")[-1]
-
-    # 2. 文字列から成績を抽出
-    # 「成績は、Xです」の X を正規表現で抜く
-    m = re.search(r"成績は、([A-D]|F)です", text)
-    if m:
-        return m.group(1)
-    else:
-        for grade in ["A", "B", "C", "D", "F"]:
-            if grade in text:
-                return grade
-    return "F"  # デフォルトは F
+# =======================================================================
+# フラット化関数
+# =======================================================================
+def flatten_dataset(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for rec in raw:
+        for l in range(1, 16):
+            lkey = f"L{l}"
+            if lkey not in rec:
+                continue
+            for q in range(1, 6):
+                qkey = f"Q{q}"
+                ans = rec[lkey].get(qkey)
+                if ans and isinstance(ans, str) and ans.strip():
+                    rows.append({
+                        "lecture": l,
+                        "question": q,
+                        "input_text": ans.strip(),
+                        "grades": rec["grades"],
+                    })
+    return rows
 
 # ================================================================
 # main
@@ -138,7 +148,7 @@ def main() -> None:
     print("set logger")
     logger = set_logger(level=INFO)
     logger.info("Logger ready ✅")
-
+    rng = random.Random(SEED)
 
     # tokenizerの設定
     tokenizer = AutoTokenizer.from_pretrained(
@@ -147,7 +157,7 @@ def main() -> None:
 
     question_filter = [1, 2, 3, 4, 5]  # フィルタリングする質問番号
 
-    data = GradeExplanationDataset(
+    data_raw = GradeExplanationDataset(
         dataset_path=DATA_PATH,
         logger=logger,
         question_filter=question_filter,
@@ -156,6 +166,39 @@ def main() -> None:
         division=False,
         tokenizer=tokenizer,
     )
+
+    rows = flatten_dataset(data_raw)
+
+    # --- ペアを grade ごとに整理 (≥ MIN_ANS)
+    grade_pair_map: Dict[str, List[Tuple[int, int, List[Dict[str, Any]]]]] = {g: [] for g in "ABCDF"}
+    for g in "ABCDF":
+        for l in range(1, 16):
+            for q in range(1, 6):
+                grp = [r for r in rows if r["grades"] == g and r["lecture"] == l and r["question"] == q]
+                if len(grp) >= MIN_ANS:
+                    grade_pair_map[g].append((l, q, grp))
+
+    # --- API コール数を grade 割合で決定
+    total_records = len(rows)
+    calls_per_grade: Dict[str, int] = {
+        g: max(1, round(TOTAL_API_CALLS * len([r for r in rows if r["grades"] == g]) / total_records))
+        for g in "ABCDF"
+    }
+    # 誤差調整
+    diff = TOTAL_API_CALLS - sum(calls_per_grade.values())
+    if diff != 0:
+        # 誤差を A→F 順に振る
+        for g in "ABCDF":
+            if diff == 0:
+                break
+            calls_per_grade[g] += 1 if diff > 0 else -1
+            diff += -1 if diff > 0 else 1
+
+    logger.info("API calls per grade → %s", calls_per_grade)
+
+    # --- 出力ファイル準備
+    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    client = load_openai_client(API_PATH)
 
     # プロンプトの設定
     Q_TEXT = {
@@ -190,94 +233,75 @@ def main() -> None:
     #     "### アンケート回答:\n{answers}\n"
     # )
 
-    BASE_PROMPT = (
-        "以下の 10 件は、同一講義回・同一質問に対する学生の回答です。"
+    prompt_template = (
+        "以下の {n} 件は、同一講義回・同一質問に対する学生の回答です。"
         "これらを参考に **新しい回答を 5 行** 生成してください。\n\n"
         "■ ルール\n"
-        "1. 各行は最大 100 文字、1〜2 文で簡潔に。\n"
+        "1. 各行は最大 50 文字、1〜2 文で簡潔に。\n"
         "2. 講義内容への理解・意見を必ず含める。\n"
-        "3. 入力回答と 30% 以上語句が一致しないよう語彙を変える。\n"
+        "3. 入力回答と 50% 以上語句が一致しないよう語彙を変える。\n"
         "4. 個人情報・不適切表現は禁止。\n"
         "5. 出力は改行区切り 5 行のみ。番号や記号は付けない。\n\n"
-        "### 良い例\n{good_examples}\n"
-        "### NG 例\n{bad_examples}\n"
+        "### 良い例：\n{good}\n"
+        "### NG 例：\n{bad}\n"
         "---\n"
-        "### 質問\n{question}\n\n"
-        "### 参考アンケート (10 件)\n{answers}\n"
+        "### 質問：\n{question}\n\n"
+        "### 参考アンケート ({n} 件)：\n{answers}\n"
         "--- ここから出力 (5 行) ---"
     )
 
-
-
-    # OpenAIクライアントのロード
-    client = load_openai_client(API_PATH)
-
     # データの要素を確認
-    logger.info(f"data keys: {data[0].keys() if data else 'No data available'}")
-
-    # --- Grade 分布計算
-    total = len(data)
-    grade_rate: Dict[str, float] = {
-        g: sum(d["grades"] == g for d in data) / total for g in ["A", "B", "C", "D", "F"]
-    }
-    logger.info("Grade distribution → %s", grade_rate)
-
-    # 4000 呼出しを 75 (15×5) ペアに分配
-    base_calls = 4000
-    per_pair = {g: max(1, int(rate * base_calls) // 75) for g, rate in grade_rate.items()}
-    logger.info("Calls per (lecture, question) pair → %s", per_pair)
-
-    # --- 出力ファイルの準備
-    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # 追記モードで開く（既存内容を活かす）
-
-    rng = random.Random(SEED)
+    logger.info(f"data keys: {rows[0].keys() if rows else 'No data available'}")
 
     # =============================================================
     # 生成ループ
     # =============================================================
-    generated_cnt = 0
-    for grade, num in per_pair.items():
-        logger.info("Grade %s: %d×75 generate", grade, num)
-        subset = [d for d in data if d["grades"] == grade]
-        for lec in range(1, 16):
-            for q in range(1, 6):
-                grp = [d for d in subset if d["lecture"] == lec and d["question"] == q]
-                if len(grp) < num:
-                    continue
-                sampled = rng.sample(grp, num)
-                answers = [d["input_text"] for d in sampled]
 
-                prompt_user = BASE_PROMPT.format(
-                    good_examples=GOOD_EXAMPLES,
-                    bad_examples=BAD_EXAMPLES,
-                    question=Q_TEXT[q],
-                    answers="\n".join(f"- {a}" for a in answers),
-                )
+    total_generated = 0
 
-                reply = call_gpt_api(
-                    client,
-                    OPENAI_MODEL_NAME,
-                    prompt_user,
-                    seed=SEED,
-                    logger=logger,
-                )
-                if not reply:
-                    continue
+    for g, calls_needed in calls_per_grade.items():
+        pairs = grade_pair_map[g]
+        if not pairs:
+            logger.warning("Grade %s に %d 回分の有効ペアがありません", g, calls_needed)
+            continue
+        # ラウンドロビンでペアを回す
+        pair_cycle = cycle(pairs)
+        for _ in range(calls_needed):
+            lec, q, grp = next(pair_cycle)
+            sample_size = min(10, len(grp))
+            answers_rows = rng.sample(grp, sample_size)
+            answers = [r["input_text"] for r in answers_rows]
 
-                lines = [ln.lstrip("- ").strip() for ln in reply.splitlines() if ln.strip()][:5]
-                with OUT_FILE.open("a", encoding="utf-8") as fout:
-                    for line in lines:
-                        fout.write(json.dumps({
-                            "lecture": lec,
-                            "question": q,
-                            "grades": grade,
-                            "input_text": "\n".join(answers),
-                            "target": line,
-                        }, ensure_ascii=False) + "\n")
-                        generated_cnt += 1
+            user_prompt = prompt_template.format(
+                n=sample_size,
+                good=GOOD_EXAMPLES,
+                bad=BAD_EXAMPLES,
+                question=f"{Q_TEXT[q]}",  # 質問テキスト本体は省略可
+                answers="\n".join(f"- {a}" for a in answers),
+            )
 
-    logger.info("▶︎ 完了: %d 件を %s に書き込みました", generated_cnt, OUT_FILE)
+            reply = call_gpt_api(client,
+                                model=OPENAI_MODEL_NAME,
+                                prompt_user=user_prompt, 
+                                seed=SEED, 
+                                logger=logger)
+            if not reply:
+                continue
+
+            lines = [ln.lstrip("- ").strip() for ln in reply.splitlines() if ln.strip()][:TARGET_OUT_LINES]
+            with OUT_FILE.open("a", encoding="utf-8") as f:
+                for line in lines:
+                    f.write(json.dumps({
+                        "lecture": lec,
+                        "question": q,
+                        "grades": g,
+                        "input_text": "\n".join(answers),
+                        "target": line,
+                    }, ensure_ascii=False) + "\n")
+                    total_generated += 1
+                    logger.info(f"Save {total_generated}th response: {line}")
+
+    logger.info("▶︎ 完了: %d 行を生成 (目標 20000)", total_generated)
 
 if __name__ == "__main__":
     main()
