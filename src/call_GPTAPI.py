@@ -211,13 +211,13 @@ def main2():
     -> 読み込み先，プロンプトが異なる
     """
     print("set logger")
-    logger = set_logger(level=DEBUG)
+    logger = set_logger(level=INFO)
 
     # データの読み込み
     file = Path("data/GradeExplanationDataset_Extend.jsonl")
     with file.open("r", encoding="utf-8") as f:
-        generated_data = [json.loads(line) for line in f]
-    logger.info(f"Loaded {len(generated_data)} samples from {file}")
+        data = [json.loads(line) for line in f]
+    logger.info(f"Loaded {len(data)} samples from {file}")
 
     # プロンプトの設定
     Q_TEXT = {
@@ -270,7 +270,7 @@ def main2():
         grades = sample["grades"]
         answer = sample["target"]
         
-        answer = lec + answer
+        answer = str(lec) + str(answer)
         prompt = preamble.format(
             question=question, Answer=answer, grades=grades
         )
