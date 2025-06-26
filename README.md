@@ -1,5 +1,5 @@
-# LLaVA-FT-datikz-
-LLaVAのLoRAチューニング
+# Explanation_Tuning (LLM + LoRA + ZeRO)
+LLMのLoRAチューニング
 
 ### 作成する必要のあるディレクトリ
 - `LLaVa-FT-datikz/results`
@@ -20,7 +20,7 @@ cp .env.example .env
 
 ### Train 
 ```
-bash scripts/train.sh
+bash scripts/train_DDP.sh
 ```
 sbatchでの実行
 ```
