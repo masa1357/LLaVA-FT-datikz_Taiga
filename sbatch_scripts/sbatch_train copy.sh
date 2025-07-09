@@ -5,8 +5,8 @@
 #SBATCH --time=168:00:00
 #SBATCH --cpus-per-task=64
 #SBATCH --mem-per-cpu=8G
-#SBATCH --output=./log/sbatch_train_result.txt
-#SBATCH --error=./log/sbatch_train_error.txt
+#SBATCH --output=./log/sbatch_train_result.log
+#SBATCH --error=./log/sbatch_train_error.log
 
 
 singularity exec --nv ../sif/test.sif bash scripts/train.sh

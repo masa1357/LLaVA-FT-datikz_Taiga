@@ -20,5 +20,3 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TORCH_DISABLE_DYNAMO=1 TOR
 echo "Running command at $(date):" | tee "$LOGFILE"
 echo "$CMD" | tee -a "$LOGFILE"
 eval $CMD 2>&1 | tee -a "$LOGFILE"
-
-

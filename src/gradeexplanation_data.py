@@ -1,8 +1,8 @@
 # =====================================================================
-# gradepred_data.py
-# date: 2025/05/05
+# gradeexplanation_data.py
+# date: 2025/06/17
 # description:
-#   - Reflection データセット内の任意のテキストから成績を予測するデータセット
+#   - Reflection データセット内の任意のテキストから成績とその根拠を予測するデータセットクラス
 # =====================================================================
 import logging
 from pathlib import Path
@@ -28,9 +28,9 @@ PUNCT_TABLE = str.maketrans(
 label_map = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
 
 
-class GradePredictionDataset(Dataset):
+class GradeExplanationDataset(Dataset):
     """
-    Reflection データセット内の任意のテキストから成績を予測するデータセット型
+    Reflection データセット内の任意のテキストから成績+根拠を予測するデータセット型
     構造：
         {
             "userid": "user_id",
@@ -49,8 +49,8 @@ class GradePredictionDataset(Dataset):
                 "Q4": "Q4の回答",
                 "Q5": "Q5の回答",
             }
-            "labels": labels (0~4)
             "grades": grades (A,B,C,D,F)
+            "labels": text(grades + 根拠説明)
         }
     """
 
@@ -66,9 +66,11 @@ class GradePredictionDataset(Dataset):
         valid_ratio: float = 0.2,
         random_state: int = 42,
         mode: str = "all",
-        testcase: bool = False,
         division: bool = False,
         add_extended: bool = False,
+        tokenizer=None,
+        max_tokens: int = 4096 - 330,  # プロンプト長(330)を減算
+        trim: bool = True,
     ):
         """
         ファイルを読み込み，データセットを構成する
@@ -78,67 +80,40 @@ class GradePredictionDataset(Dataset):
 
         self.answer_col = answer_col
         self.concat = concatenate
+        self.max_tokens = max_tokens
+        self.tokenizer = tokenizer
 
         # フィルタが None→全質問(1-5)、指定がある→重複排除 + ソート
         self.q_filter = (
             sorted(set(question_filter)) if question_filter else list(range(1, 6))
         )
 
-        if testcase:
-            # ================================================================
-            # LLM実行確認用のダミーデータセットを読み込み
-            # JSQuAD のデータセットを利用
-            # ================================================================
-            from datasets import load_dataset
+        # ================================================================
+        # デフォルトのデータセット読み込み
+        # dataset_path/Reflection   : 生徒のアンケート回答
+        # dataset_path/Grade        : 成績データ
+        # ================================================================
+        self.reflection_path = Path(dataset_path) / "Reflection"
+        self.grade_path = Path(dataset_path) / "Grade"
+        for p in (self.reflection_path, self.grade_path):
+            if not p.is_dir():
+                raise FileNotFoundError(f"{p} が存在しません")
 
-            ds = load_dataset("shunk031/JGLUE", name="JSQuAD", trust_remote_code=True)
-            ds = ds["validation"]
-            # 実際に使うデータと同じ形式にするために，データを調整
-            # 1. id -> userid
-            # 2. context + question -> input_text
-            # 3. answers["text"] -> grades, labels
-            dummy_samples = []
-            for uid, ctx, q, a in zip(
-                ds["id"], ds["context"], ds["question"], ds["answers"]
-            ):
-                dummy_samples.append(
-                    {
-                        "userid": uid,
-                        "input_text": f"{ctx}\n{q}",
-                        "grades": str(a["text"][0]),
-                        "labels": 0,
-                    }
-                )
-            self.dataset = dummy_samples
+        left = self._read_folder(self.reflection_path)
+        right = self._read_folder(self.grade_path)
 
-            # datasetsの要素数を削減 (100sample)
-            self.dataset = self.dataset[:100]
+        required_cols = {"userid", "course_number", "question_number", answer_col}
 
-        else:
-            # ================================================================
-            # デフォルトのデータセット読み込み
-            # dataset_path/Reflection   : 生徒のアンケート回答
-            # dataset_path/Grade        : 成績データ
-            # ================================================================
-            self.reflection_path = Path(dataset_path) / "Reflection"
-            self.grade_path = Path(dataset_path) / "Grade"
-            for p in (self.reflection_path, self.grade_path):
-                if not p.is_dir():
-                    raise FileNotFoundError(f"{p} が存在しません")
+        if not required_cols.issubset(left.columns):
+            raise KeyError(f"reflection csv に {required_cols} がありません")
+        df = pd.merge(left, right, on=merge_key, how="inner")
+        df["label"] = df["grade"].map(label_map)
 
-            left = self._read_folder(self.reflection_path)
-            right = self._read_folder(self.grade_path)
-
-            required_cols = {"userid", "course_number", "question_number", answer_col}
-
-            if not required_cols.issubset(left.columns):
-                raise KeyError(f"reflection csv に {required_cols} がありません")
-            df = pd.merge(left, right, on=merge_key, how="inner")
-            df["label"] = df["grade"].map(label_map)
-
-            # ----------- 前処理 & ネスト構築 -----------
-            df[answer_col] = df[answer_col].apply(self._preprocess)
-            self.dataset = self._build_nested(df)
+        # ----------- 前処理 & ネスト構築 -----------
+        df[answer_col] = df[answer_col].apply(self._preprocess)
+        self.dataset = self._build_nested(df)
+        if trim:
+            self.trim_dataset()  # 各回答を最大トークン数に収まるように切り詰める
 
         self.logger.info(
             f"Dataset init done. users={len(self.dataset)}, qs={self.q_filter}, "
@@ -230,13 +205,14 @@ class GradePredictionDataset(Dataset):
                         4: "A",
                     }
                     grade = ext_graded_map.get(row["grade"], "F")  # デフォルトはF
-
+                    tgt = f"この学生の成績は、{grade}です。理由は、" + str(row["label"])
                     self.dataset.append(
                         {
                             "userid": "ext_user",  # 拡張データのユーザID
                             "labels": label,
                             "grades": grade,
                             "input_text": row["answer"],
+                            "target": tgt,  # 出力例の根拠
                         }
                     )
 
@@ -441,12 +417,149 @@ class GradePredictionDataset(Dataset):
                 samples.append(entry)
         return samples
 
+    def trim_dataset(self) -> None:
+        """
+        データセット内の各回答を最大トークン数に収まるように切り詰める
+        L1-Q1 - L15-Q5までのそれぞれの文章長を取得し，各文章を最大トークン数に収まるように切り詰める
+        Parameters
+        ----------
+        max_tokens : int
+            切り詰める最大トークン数
+        dataset : list[dict[str, Any]]
+            対象データセット
+            ユーザ単位のネスト辞書リスト
+            各辞書は以下の形式：
+            {
+                "userid": str,      # ユーザID
+                "labels": int,      # ラベル (0~4)
+                "grades": str,      # 成績 (A, B, C, D, F)
+                "L1": {             # 講義回1の回答
+                    "Q1": str,     # Q1の回答
+                    "Q2": str,     # Q2の回答
+                    ...
+                },
+                ...
+            }
+        Returns
+        -------
+        dataset : list[dict[str, Any]]
+            切り詰めたデータセット
 
-class GradePredictionCollator:
+        """
+        dataset = self.dataset
+        max_tokens = self.max_tokens
+        truncate_end = "right"  # 切り詰める方向（"right" or "left"）
+
+        for sample in dataset:
+            # --- 1) 回答ごとの token 列を収集 -----------------
+            token_info: list[tuple[tuple[str, str], list[int]]] = (
+                []
+            )  # ((L?,Q?), tokens)
+            for c in range(1, 16):
+                c_key = f"L{c}"
+                if c_key not in sample:
+                    continue
+                for qn in self.q_filter:
+                    q_key = f"Q{qn}"
+                    ans = sample[c_key].get(q_key, "")
+                    # トークン数の取得
+                    tokens = self.tokenizer.encode(
+                        ans, add_special_tokens=False, truncation=False
+                    )
+                    token_info.append(((c_key, q_key), tokens))
+
+            # 各回答のトークン数の合計を取得
+            total_tokens = sum(len(tokens) for _, tokens in token_info)
+            if total_tokens <= max_tokens:
+                continue
+
+            trim = max_tokens - total_tokens
+            self.logger.debug(
+                f"Sample {sample['userid']} exceeds max_tokens ({total_tokens} > {max_tokens}). Trimm {trim} tokens."
+            )
+            # --- 2) 長い順に削減 -------------------------------
+            token_info.sort(key=lambda x: len(x[1]), reverse=True)
+            # idx = 0
+            # while total_tokens > max_tokens and idx < len(token_info):
+            #     entry = token_info[idx][1]
+            #     if len(entry) > 1:
+            #         if truncate_end == "right":
+            #             entry.pop()
+            #         else:
+            #             entry.pop(0)
+            #         total_tokens -= 1
+            #     else:
+            #         idx += 1  # 次へ
+
+            ELLIPSIS_TOKENS = self.tokenizer.encode("...", add_special_tokens=False)
+            ELLIPSIS_LEN = len(ELLIPSIS_TOKENS)
+
+            while total_tokens > max_tokens:
+                # 今回だけの長さ順
+                token_info.sort(key=lambda x: len(x[1]), reverse=True)
+                entry_tokens = token_info[0][1]  # 現在最長
+
+                # これ以上削れない（エリプシスだけ残っている or 長さ不足）
+                if len(entry_tokens) <= ELLIPSIS_LEN:
+                    break
+
+                # ① 末尾に ... が 既に 付いているか確認
+                if entry_tokens[-ELLIPSIS_LEN:] == ELLIPSIS_TOKENS:
+                    # ② 既に ... がある → その直前を削る
+                    del entry_tokens[-ELLIPSIS_LEN - 1]
+                    total_tokens -= 1
+                else:
+                    # ③ まだ無ければ 末尾1トークンを ... に置換
+                    entry_tokens.pop()  # 1 トークン削除
+                    entry_tokens.extend(ELLIPSIS_TOKENS)  # ... を追加
+                    # pop と extend で ( -1 + ELLIPSIS_LEN ) だけ総トークンが増減
+                    total_tokens += ELLIPSIS_LEN - 1
+
+            #! ライブラリ追加したらこっちのほうが計算量が少なくなる
+            # import heapq
+
+            # # token_info: [((c_key,q_key), tokens), ...]  # 前段で生成済み
+            # heap = [(-len(toks), i) for i, (_, toks) in enumerate(token_info)]
+            # heapq.heapify(heap)
+
+            # while total_tokens > max_tokens:
+            #     neg_len, i = heapq.heappop(heap)          # 最長を取得
+            #     toks = token_info[i][1]
+            #     if len(toks) == 1:                        # これ以上削れない
+            #         continue
+            #     pop_idx = -1 if truncate_end == "right" else 0
+            #     toks.pop(pop_idx)                         # 1トークン削除
+            #     total_tokens -= 1
+            #     heapq.heappush(heap, (-len(toks), i))     # 更新して再投入
+
+            # --- 3) 文章を戻す --------------------------------
+            for (c_key, q_key), toks in token_info:
+                sample[c_key][q_key] = self.tokenizer.decode(
+                    toks, skip_special_tokens=True
+                )
+
+        for sample in dataset:
+            # 各回答を連結，使わないキーを削除[仮コード]
+            lines = []
+            for c in range(1, 16):
+                c_key = f"L{c}"
+                if c_key not in sample:
+                    continue
+                for qn in self.q_filter:
+                    q_key = f"Q{qn}"
+                    ans = sample[c_key].get(q_key, "")
+                    lines.append(f"{c_key}-{q_key}: {ans}")
+            sample["input_text"] = "\n".join(lines)
+
+        self.dataset = dataset
+        del dataset  # メモリ解放
+
+
+class GradeExplanationCollator:
     """
-    GradePredictionDataset 用の collate_fn を作成
+    GradeExplanationDataset 用の collate_fn を作成
     huggingface Trainer の DataCollator 互換のインタフェース
-    huggingface>DataCollatorForSeq2Seq
+    huggingface>DataCollator
     十分条件；
     features    : Dict[
 
@@ -494,13 +607,14 @@ class GradePredictionCollator:
         self.preamble = (
             "あなたは大学の教授であり、学生の成績を決定する役割を担っています。"
             "以下に示す学生の講義後アンケートを読み、成績を高い順に A、B、C、D、F のいずれかに分類してください。\n"
-            "成績は出力例のような形式で出力してください。\n"
+            "さらに、その成績を決定した根拠を簡潔に説明してください。\n"
+            "成績と根拠は出力例のような形式で出力してください。\n"
             "入力文のL は講義回、Q は質問番号を示します（例: L1-Q1）。\n"
             f"アンケートの質問文は、\n{question}です。"
-            "回答が NaN の場合は未回答です。\n"
-            "出力には A、B、C、D、F のいずれかを含めてください。\n"
+            "回答が NaN の場合は未回答であり、回答文字数が一定以上ならば切り捨てています。\n"
+            "出力には、必ず A、B、C、D、F のいずれかを含めてください。\n"
             "出力例:\n"
-            "この学生の成績は、Aです。\n"
+            "この学生の成績は、Aです。理由は、質問１において、講義内容を数式を用いて詳細に説明しており、講義内容の理解度が高いためです。\n"
             "アンケート内容："
         )
         logger.info(
@@ -535,11 +649,11 @@ class GradePredictionCollator:
             f"[INST] {self.preamble}\n\n{ex['input_text']}\n[/INST]\n"
             for ex in features
         ]
-        grades = [ex["grades"] for ex in features]
-        tgt_str = [f" この学生の成績は、{g}です。" for g in grades]
+        # tgt_str は features内のtargetに保存される
+        tgt_str = [ex["target"] for ex in features]
 
         self.logger.debug("prompt sample:\n%s", prompts[0][:500])
-        self.logger.debug("grade sample: %s", tgt_str[0][:50])
+        self.logger.debug("target sample: %s", tgt_str[0][:50])
 
         enc_prompt = self.tokenizer(
             prompts,
@@ -597,7 +711,12 @@ class GradePredictionCollator:
         )
 
         # enc_tgt["input_ids"] をtorch.tensorに変換して保持
-        target_ids = torch.tensor(enc_tgt["input_ids"], dtype=torch.long)
+        # target_ids = torch.tensor(enc_tgt["input_ids"], dtype=torch.long)
+        seq_list = [torch.tensor(ids, dtype=torch.long) for ids in enc_tgt["input_ids"]]
+
+        target_ids = pad_sequence(
+            seq_list, batch_first=True, padding_value=self.tokenizer.pad_token_id
+        )
 
         return {
             "input_ids": batch_ids,

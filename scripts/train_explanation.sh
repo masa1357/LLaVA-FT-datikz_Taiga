@@ -12,12 +12,12 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         CUDA_VISIBLE_DEVICES=0,1,2,3 \
         accelerate launch \
         --config_file ds_zero3.yaml \
-        src/train_DDP.py \
+        src/train_Explainer.py \
         --output_dir ./outputs/llama3-elyza-8b-lora \
         --epochs 3 \
         --batch_size 4 \
         --run_name llama3-elyza-8b-lora_test \
-        --max_words 3072
+        --max_words 3072 \
         --logfile $LOGFILE \
         "
 

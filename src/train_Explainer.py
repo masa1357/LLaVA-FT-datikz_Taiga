@@ -1,9 +1,9 @@
 # =====================================================================
-# train_DDP.py
-# date: 2025/06/04
+# train_Explainer.py
+# date: 2025/06/18
 # description:
-#   - LLMのLoRAチューニングを行う
-#   - OOM対策として ZeRO Data Parallelism を採用
+#   - LLMのLoRAチューニングを行う（ZeRO 3）
+#   - 成績＋根拠提示
 # 対象モデル；
 #   - elyza/Llama-3-ELYZA-JP-8B
 # =====================================================================
@@ -26,6 +26,7 @@ from logging import (
 )
 from functools import partial
 from typing import Dict, List
+import json
 
 # ================ サードパーティ ================
 import numpy as np
@@ -45,8 +46,9 @@ from sklearn.metrics import confusion_matrix
 
 # ================ プロジェクト内（ローカル） ================
 from util import load_model, set_seed, set_logger
-from gradepred_data import GradePredictionDataset, GradePredictionCollator
+from gradeexplanation_data import GradeExplanationDataset, GradeExplanationCollator
 from accelerate import Accelerator
+
 
 # -------- environment setting --------
 load_dotenv()
@@ -68,6 +70,30 @@ BYTES_PER_PARAM = {
 
 if not hasattr(np, "float"):
     np.float = float
+
+OUT_PATH = "./results/GradeExplanation/"
+
+
+# DummyFile: 何も書き込まないダミークラス
+class DummyFile:
+    def write(self, x):
+        pass  # 何もしない
+
+    def flush(self):
+        pass  # 何もしない
+
+
+# target_dataset内のuseridをキーにして，targetをdataに追加する
+def add_target_to_data(
+    data: GradeExplanationDataset, target_dataset
+) -> GradeExplanationDataset:
+    # Build a mapping from userid to target
+    userid_to_target = {item["userid"]: item["target"] for item in target_dataset}
+    for i in range(len(data)):
+        user_id = data[i]["userid"]
+        if user_id in userid_to_target:
+            data[i]["target"] = userid_to_target[user_id]
+    return data
 
 
 def evaluate(
@@ -95,30 +121,6 @@ def evaluate(
 
     logger.info(f"#pred={len(pred_text)}, #labels={len(label_text)}")
 
-    # pred_logits = pred_result.predictions  # (bs, seq, vocab) か np.object_
-    # logger.info(f"pred_logits shape\t: {pred_logits.shape}")
-    # logger.debug(f"pred_logits \t: \n{pred_logits}")
-    # if pred_logits.ndim == 3:  # logits パターン
-    #     pred_ids = pred_logits.argmax(-1)  # (bs, seq)
-    # else:  # 既に ID が入っている場合
-    #     logger.info("pred_logits is already in ID format, skipping argmax operation.")
-    #     pred_ids = pred_logits
-
-    # # -100 → pad に置換（labels も同様に）
-    # pred_ids = pred_ids.tolist()  # list[list[int]]
-    # label_ids = pred_result.label_ids
-    # logger.info(f"label_ids shape\t: {label_ids.shape}")
-    # logger.debug(f"label_ids \t: \n{label_ids}")
-    # label_ids[label_ids == -100] = tokenizer.pad_token_id
-    # label_ids = label_ids.tolist()
-
-    # pred_text = pred_result.output_sentence
-    # grades = [row["grades"] for row in eval_dataset]
-    # labels_text = [f" この学生の成績は、{g}です。" for g in grades]
-
-    # pred_text = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
-    # labels_text = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-
     #! 一時的な処置
     labels_text = label_text
 
@@ -141,21 +143,6 @@ def evaluate(
     # Metrics #1    : BLEU
     bleu = sacrebleu.corpus_bleu(pred_text, [labels_text]).score
 
-    # Metrics #2    : MoverScore
-    # idf_p = get_idf_dict(pred_text)
-    # idf_r = get_idf_dict(labels_text)
-    # ms = word_mover_score(
-    #     labels_text,
-    #     pred_text,
-    #     idf_r,
-    #     idf_p,
-    #     stop_words=[],
-    #     n_gram=1,
-    #     remove_subwords=True,
-    #     batch_size=16,
-    #     device = torch.device("cpu")
-    # )
-    # moverscore = float(np.mean(ms))
     moverscore = 1.0  # 仮置き値（実際の計算はコメントアウト）
 
     # Metrics #3    : Accuracy
@@ -179,10 +166,7 @@ def evaluate(
     pred_grades = [extract_grade(text) for text in pred_text]
     label_grades = [extract_grade(text) for text in labels_text]
     accuracy = np.mean(np.array(pred_grades) == np.array(label_grades)) * 100
-    cf = confusion_matrix(
-        label_grades, pred_grades, labels=["A", "B", "C", "D", "F"]
-    )
-    
+    cf = confusion_matrix(label_grades, pred_grades, labels=["A", "B", "C", "D", "F"])
 
     # 予測に成功しているケースをいくつか表示
     if show_samples > 0:
@@ -220,22 +204,8 @@ def evaluate(
         "bleu": round(bleu, 4),
         "moverscore": round(moverscore, 4),
         "accuracy": round(accuracy, 4),
-        "confusion_matrix": cf
+        "confusion_matrix": cf,
     }
-
-
-def custom_compute_metrics(res: EvalPrediction) -> Dict:
-
-    return {}
-
-
-# DummyFile: 何も書き込まないダミークラス
-class DummyFile:
-    def write(self, x):
-        pass  # 何もしない
-
-    def flush(self):
-        pass  # 何もしない
 
 
 def main():
@@ -349,76 +319,65 @@ def main():
 
     # データセットを読み込む
     dataset_path = "./data/"
+    targetfile_path = os.path.join(
+        dataset_path, "GradeExplanationDataset_Qs5_trimmed.pt"
+    )
 
+    target_dataset = torch.load(targetfile_path)
+    logger.info(f"Target loaded from {targetfile_path}")
+    logger.info(f"Target size: {len(target_dataset)}")
+    logger.info(f"Target sample: {target_dataset[0]}")
+
+    train_dataset = GradeExplanationDataset(
+        dataset_path=dataset_path,
+        question_filter=[1, 2, 3, 4, 5],
+        concatenate=False,
+        mode="train",
+        tokenizer=tokenizer,
+        division=True,  # データセットを分割して訓練と検証に使用
+        # trim=True,
+        add_extended=True,  # 拡張データセットを使用する場合はTrue
+    )
+
+    eval_dataset = GradeExplanationDataset(
+        dataset_path=dataset_path,
+        question_filter=[1, 2, 3, 4, 5],
+        concatenate=False,
+        division=True,  # データセットを分割して訓練と検証に使用
+        mode="valid",
+        tokenizer=tokenizer,
+        # trim=True,
+    )
+
+    # target_datasetのtargetをtrain_datasetとeval_datasetに追加
+    train_dataset = add_target_to_data(train_dataset, target_dataset)
+    eval_dataset = add_target_to_data(eval_dataset, target_dataset)
+
+    logger.info(f"len(train_dataset): {len(train_dataset)}")
+    logger.info(f"len(eval_dataset): {len(eval_dataset)}")
+    logger.info(f"train keys: {list(train_dataset[0].keys())}")
+    logger.info(f"eval keys: {list(eval_dataset[0].keys())}")
+
+    logger.info(
+        f"train_dataset[0]: {train_dataset[0]}"
+    )  # -> train_dataset[0]: {'input_text': '...', 'target': 'A', ...}
 
     train_logger = set_logger(name="CollateTrain", level=INFO)
     eval_logger = set_logger(name="CollateEval", level=INFO)
 
-    all_extend = False  # 全行展開バージョンを使用するかどうか
-    if all_extend:
-        # 全行展開バージョン
-        train_dataset = GradePredictionDataset(
-            dataset_path=dataset_path,
-            concatenate=False,
-            mode="train",
-            division=True,  # 全行展開
-            # add_extended=True,  #? 追加データの有無
-            logger=train_logger,  # ロガーを渡す
-        )
-        eval_dataset = GradePredictionDataset(
-            dataset_path=dataset_path,
-            concatenate=False,
-            mode="valid",
-            division=True,  # 全行展開
-        )
-    else:
-        train_dataset = GradePredictionDataset(
-            dataset_path=dataset_path,
-            question_filter=[1],
-            concatenate=True,
-            mode="train",
-            )
-        eval_dataset = GradePredictionDataset(
-            dataset_path=dataset_path,
-            question_filter=[1],
-            concatenate=True,
-            mode="valid",
-        )
+    train_collator = GradeExplanationCollator(
+        tokenizer,
+        max_tokens=args.max_words,
+        include_target=True,
+        logger=train_logger,
+    )
 
-    logger.info(f"len(train_dataset): {len(train_dataset)}")
-    logger.info(f"len(eval_dataset): {len(eval_dataset)}")
-
-
-    if all_extend:
-        logger.info("Using all-extended version of the dataset (all_extend=True).")
-        train_collator = GradePredictionCollator(
-            tokenizer,
-            max_tokens=args.max_words,
-            include_target=True,
-            logger=train_logger,
-        )
-        eval_collator = GradePredictionCollator(
-            tokenizer,
-            max_tokens=args.max_words,
-            include_target=False,
-            logger=eval_logger,
-        )
-    else:
-        logger.info("Using standard version of the dataset (all_extend=False).")
-        train_collator = GradePredictionCollator(
-            tokenizer,
-            max_tokens=args.max_words,
-            include_target=True,
-            logger=train_logger,
-            question_filter=[1],
-        )
-        eval_collator = GradePredictionCollator(
-            tokenizer,
-            max_tokens=args.max_words,
-            include_target=False,
-            logger=eval_logger,
-            question_filter=[1],
-        )
+    eval_collator = GradeExplanationCollator(
+        tokenizer,
+        max_tokens=args.max_words,
+        include_target=False,
+        logger=eval_logger,
+    )
 
     logger.info(
         f"custom_collate_fn initialized with processor: {type(tokenizer).__name__}"
@@ -467,15 +426,6 @@ def main():
     )
 
     model, eval_loader = acc.prepare(model, eval_loader)  # DDP対応化
-
-    # if acc.is_main_process:  # rank 0 だけ表示
-    #     st = acc.state
-    #     acc.print(
-    #         f"Accelerate initialized ⇒ "
-    #         f"world_size={st.num_processes}, "
-    #         f"local_rank={st.local_process_index}, "
-    #         f"device={st.device}"
-    #     )
     model.eval()  # モデルを評価モードに設定
 
     # modelのdeviceを設定
@@ -492,7 +442,7 @@ def main():
             outputs = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                max_new_tokens=128,
+                max_new_tokens=2048,
                 do_sample=True,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
@@ -524,6 +474,15 @@ def main():
         "output_sentence": pred_text,
         "label_sentence": label_text,
     }
+
+    save_dir = "./results/GradeExplanation/extended/"
+
+    # pred_resultをファイルに保存
+    save_path = os.path.join(save_dir, "pred_result_before_training.json")
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(pred_result, f, ensure_ascii=False, indent=4)
 
     metrics = evaluate(
         pred_result, eval_dataset, tokenizer, show_samples=5, logger=logger
@@ -591,22 +550,12 @@ def main():
 
     logger.info("🔧 Applying LoRA and enabling full finetune modules...")
 
-    # LoRA 適用済み（前段） -> ZeRO 3 でエラーが発生する可能性あり
-    # for name, param in model.named_parameters():
-    #     if any(module_name in name for module_name in full_finetune_modules):
-    #         param.requires_grad = False
-    #         param.data = param.data.to(torch.float16)
-
     logger.info("✅ LoRA has been applied.")
     logger.info(
         f"✅ The following modules are fully finetuned: {', '.join(full_finetune_modules)}"
     )
 
     model.gradient_checkpointing_enable()
-    # if local_rank == 0:
-    #     model.logger.info_trainable_parameters()
-    #     summary(model, depth=2)
-
     logger.debug("Trainable parameters:")
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -664,8 +613,6 @@ def main():
     logger.info("=================================================")
     logger.info("=================================================")
 
-    # trainer.accelerator.end_training()  # ★ inference Accelerator を閉じる
-    # trainer._created_accelerator = False  # ★ “作成済み” フラグをリセット
     model.train()
     logger.info("🔄 Start training...")
     trainer.data_collator = train_collator
@@ -711,7 +658,7 @@ def main():
             outputs = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                max_new_tokens=128,
+                max_new_tokens=2048,
                 do_sample=True,  # 推論時は通常Greedy
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
@@ -727,49 +674,6 @@ def main():
         pred_text.extend(decoded_outputs)
         label_text.extend(tgt_str)
 
-    # gc = GenerationConfig(
-    #     max_new_tokens=64,
-    #     do_sample=False,  # 評価では通常 OFF
-    #     top_p=0.9,  # 必要に応じて
-    #     temperature=0.7,
-    #     pad_token_id=tokenizer.pad_token_id,
-    #     eos_token_id=tokenizer.eos_token_id,
-    #     # 分散推論の長さずれ防止
-    #     # synced_gpus=True,     # transformers>=4.34 なら有効
-    # )
-
-    # trainer.data_collator = eval_collator
-    # pred_output = trainer.predict(
-    #     eval_dataset, generation_config=gc, predict_with_generate=True
-    # )  # DeepSpeed + ZeRO3 対応済み
-
-    # # 生成トークンを安全に整形
-    # pred_ids = pred_output.predictions.tolist()
-
-    # clean_pred_ids = []
-    # for seq in pred_ids:
-    #     if gc.eos_token_id in seq:
-    #         seq = seq[: seq.index(gc.eos_token_id)]
-    #     clean_pred_ids.append([tok for tok in seq if tok != gc.pad_token_id])
-
-    # pred_text = tokenizer.batch_decode(
-    #     clean_pred_ids,
-    #     skip_special_tokens=True,
-    #     clean_up_tokenization_spaces=True,  # ★
-    # )
-
-    # # eval_datasetから入力文を抽出
-    # input_ids_list = [
-    #     example["input_ids"] for example in eval_dataset
-    # ]  # list[list[int]]
-    # input_text = tokenizer.batch_decode(
-    #     input_ids_list,
-    #     skip_special_tokens=True,
-    # )
-
-    # del pred_output, pred_ids
-    # torch.cuda.empty_cache()
-
     # 結果を格納（Trainer.predictの形式に寄せたい場合）
     pred_result = {
         "input_sentence": input_text,
@@ -777,26 +681,13 @@ def main():
         "label_sentence": label_text,
     }
 
-    # logger.debug(f"pred_result elements\t:{pred_result._asdict().keys()}")
-    # pred_text = tokenizer.batch_decode(
-    #     pred_result.predictions, skip_special_tokens=True
-    # )
-    # labels_text = tokenizer.batch_decode(
-    #     pred_result.label_ids, skip_special_tokens=True
-    # )
-
-    # logger.info("✅️ Visualize sample answers")
-    # for i in range(5):
-    #     msg = "\n".join(
-    #         [
-    #             "========================",
-    #             f"Sample {i}:",
-    #             f"Predict\t: {pred_text[i]}",
-    #             f"Target\t: {label_text[i]}",
-    #             "========================",
-    #         ]
-    #     )
-    #     logger.info(msg)
+    # pred_resultをファイルに保存
+    save_path = os.path.join(save_dir, "pred_result_after_training.json")
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    with open(save_path, "w", encoding="utf-8") as f:
+        json.dump(pred_result, f, ensure_ascii=False, indent=4)
+    logger.info(f"Prediction results saved to {save_path}")
 
     metrics = evaluate(
         pred_result, eval_dataset, tokenizer, show_samples=5, logger=logger
@@ -817,4 +708,7 @@ def main():
 
 
 if __name__ == "__main__":
+    print("=" * 50)
+    print("🚀 train_Explainer.py")
+    print("=" * 50)
     main()
