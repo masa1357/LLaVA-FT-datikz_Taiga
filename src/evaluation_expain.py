@@ -3,8 +3,18 @@
 # description:
 #   - 文章生成タスクの評価を行う
 # =====================================================================
+import numpy as np
 
-
+deprecated_aliases = {
+    "float":  "float64",
+    "int":    "int64",
+    "bool":   "bool_",
+    "object": "object_",
+}
+for alias, typ in deprecated_aliases.items():
+    if not hasattr(np, alias):
+        setattr(np, alias, getattr(np, typ))
+        
 # libraries
 import json
 from pathlib import Path
@@ -17,12 +27,19 @@ from rouge_score import rouge_scorer
 from nltk.translate.meteor_score import meteor_score  # nltk.download('wordnet') が初回のみ必要
 from moverscore_v2 import word_mover_score, get_idf_dict
 
+# from sudachipy import tokenizer, dictionary
+
 
 # own libraries
 from src.util import set_logger
 
 DATA_DIR = Path("results/GradeExplanation/connect")
 
+# suda_tokenizer = dictionary.Dictionary().create()
+# suda_mode = tokenizer.Tokenizer.SplitMode.C
+# def tokenize_ja(text: str) -> list[str]:
+#     """Sudachi で形態素解析し，表層形リストを返す"""
+#     return [m.surface() for m in suda_tokenizer.tokenize(text, suda_mode)]
 # =============================================================
 # evaluation function
 # =============================================================
@@ -46,8 +63,15 @@ def evaluate_record(record: Dict[str, List[str]]) -> Dict[str, float]:
     rouge1, rouge2, rougel = [s / n * 100 for s in (rouge1, rouge2, rougel)]
 
     # ---------- METEOR ----------
-    meteor = sum(meteor_score([r], p) for p, r in zip(preds, refs)) / n * 100
-
+    # meteor = (
+    #     sum(
+    #         meteor_score([tokenize_ja(r)], tokenize_ja(p))
+    #         for p, r in zip(preds, refs)
+    #     )
+    #     / n * 100
+    # )
+    # meteorにはダミーの結果を入れておく
+    meteor = 0.0
     # ---------- MoverScore ----------
     idf_pred = get_idf_dict(preds)
     idf_ref  = get_idf_dict(refs)
@@ -77,13 +101,13 @@ def evaluate_record(record: Dict[str, List[str]]) -> Dict[str, float]:
 
 def main() -> None:
     print("setup logger")
-    logger = set_logger(logging.INFO)
+    logger = set_logger(level = logging.INFO)
 
     # =============================================================
     # load data
     # =============================================================
-    before_file = "pred_result_before_training.json",
-    after_file  = "pred_result_after_training.json",
+    before_file = "pred_result_before_training.json"
+    after_file  = "pred_result_after_training.json"
     
     with open(DATA_DIR / before_file, encoding="utf-8") as f:
         before_data = json.load(f)
@@ -120,24 +144,24 @@ def main() -> None:
     # Check data
     # =============================================================
 
-    logger.info("Check data : before_training")
-    for i, data in enumerate(before_data):
-        logger.info(f"Data {i+1}:")
-        logger.info(f"Input: {data['input_sentence']}")
-        logger.info(f"Output: {data['output_sentence']}")
-        logger.info(f"Label: {data['label_sentence']}")
+    # logger.info("Check data : before_training")
+    # for i, data in enumerate(before_data):
+    #     logger.info(f"Data {i+1}:")
+    #     logger.info(f"Input: {data['input_sentence']}")
+    #     logger.info(f"Output: {data['output_sentence']}")
+    #     logger.info(f"Label: {data['label_sentence']}")
 
-        if i >= 10:  # 最初の10件だけ表示
-            break
-    logger.info("Check data : after_training")
-    for i, data in enumerate(after_data):
-        logger.info(f"Data {i+1}:")
-        logger.info(f"Input: {data['input_sentence']}")
-        logger.info(f"Output: {data['output_sentence']}")
-        logger.info(f"Label: {data['label_sentence']}")
+    #     if i >= 10:  # 最初の10件だけ表示
+    #         break
+    # logger.info("Check data : after_training")
+    # for i, data in enumerate(after_data):
+    #     logger.info(f"Data {i+1}:")
+    #     logger.info(f"Input: {data['input_sentence']}")
+    #     logger.info(f"Output: {data['output_sentence']}")
+    #     logger.info(f"Label: {data['label_sentence']}")
 
-        if i >= 10:  # 最初の10件だけ表示
-            break
+    #     if i >= 10:  # 最初の10件だけ表示
+    #         break
     # =============================================================
     # evaluation
     # metrics 1: BLEU

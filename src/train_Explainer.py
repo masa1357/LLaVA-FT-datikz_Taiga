@@ -331,19 +331,22 @@ def main():
     train_dataset = GradeExplanationDataset(
         dataset_path=dataset_path,
         question_filter=[1, 2, 3, 4, 5],
-        concatenate=True,
+        concatenate=False,
         mode="train",
         tokenizer=tokenizer,
-        trim=True,
+        division=True,  # データセットを分割して訓練と検証に使用
+        # trim=True,
+        add_extended=True,  # 拡張データセットを使用する場合はTrue
     )
 
     eval_dataset = GradeExplanationDataset(
         dataset_path=dataset_path,
         question_filter=[1, 2, 3, 4, 5],
-        concatenate=True,
+        concatenate=False,
+        division=True,  # データセットを分割して訓練と検証に使用
         mode="valid",
         tokenizer=tokenizer,
-        trim=True,
+        # trim=True,
     )
 
     # target_datasetのtargetをtrain_datasetとeval_datasetに追加
@@ -472,8 +475,10 @@ def main():
         "label_sentence": label_text,
     }
 
+    save_dir = "./results/GradeExplanation/extended/"
+
     # pred_resultをファイルに保存
-    save_path = os.path.join(args.output_dir, "pred_result_before_training.json")
+    save_path = os.path.join(save_dir, "pred_result_before_training.json")
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     with open(save_path, "w", encoding="utf-8") as f:
@@ -677,7 +682,7 @@ def main():
     }
 
     # pred_resultをファイルに保存
-    save_path = os.path.join(args.output_dir, "pred_result_after_training.json")
+    save_path = os.path.join(save_dir, "pred_result_after_training.json")
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     with open(save_path, "w", encoding="utf-8") as f:

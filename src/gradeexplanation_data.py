@@ -205,13 +205,14 @@ class GradeExplanationDataset(Dataset):
                         4: "A",
                     }
                     grade = ext_graded_map.get(row["grade"], "F")  # デフォルトはF
-
+                    tgt = f"この学生の成績は、{grade}です。理由は、" + str(row["label"])
                     self.dataset.append(
                         {
                             "userid": "ext_user",  # 拡張データのユーザID
                             "labels": label,
                             "grades": grade,
                             "input_text": row["answer"],
+                            "target": tgt,  # 出力例の根拠
                         }
                     )
 
@@ -734,5 +735,3 @@ class GradeExplanationCollator:
         ]
 
         return prompts
-
-
