@@ -9,12 +9,11 @@ import logging
 from pathlib import Path
 import re, unicodedata
 import pandas as pd
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset 
 from typing import Any, Iterable, Sequence
 import torch
 from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
-
 
 WS_RE = re.compile(r"[ \u3000\r\n\t]+")  # \u3000 = 全角スペース
 # 句読点変換テーブル
@@ -28,6 +27,14 @@ PUNCT_TABLE = str.maketrans(
 )
 
 label_map = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
+
+class ext_GPDataset(GradePredictionDataset):
+    def __init__(self, dataset_path: Path):
+        # super().__init__()
+        self.dataset_path = dataset_path
+        self.dataset: list[dict[str, Any]] = []
+        self.extention()
+        
 
 
 class GradePredictionDataset(Dataset):
@@ -57,7 +64,14 @@ class GradePredictionDataset(Dataset):
     """
 
     # -------- Dataset インタフェース --------
-    def __init__(self):
+    def __init__(self,
+                 dataset_path: Path,
+                 logger: logging.Logger | None = None,
+                 fill_token: str = "NaN",
+                 answer_col: str = "answer_content",
+                 question_filter: Sequence[int] | None = None,
+                 merge_key: str = "userid",
+                 ):
         """
         ファイルを読み込み，データセットを構成する
         """
@@ -65,6 +79,7 @@ class GradePredictionDataset(Dataset):
         self.fill_token = fill_token
 
         self.answer_col = answer_col
+        self.dataset_path = dataset_path
 
         # フィルタが None→全質問(1-5)、指定がある→重複排除 + ソート
         self.q_filter = (
@@ -109,9 +124,15 @@ class GradePredictionDataset(Dataset):
 
     def __getitem__(self, idx:int):
         return self.dataset[idx]
+    
 
 
     # -------- 内部ユーティリティ --------
+    def reset(self):
+        """データセットの形状をリセット"""
+        self.dataset = self.raw_dataset
+
+
     def concat(self):
         # 連結テキストモード
         self.dataset: list[dict[str, Any]] = []
