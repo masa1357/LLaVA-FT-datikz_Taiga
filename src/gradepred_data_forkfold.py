@@ -122,11 +122,13 @@ class GradePredictionDataset(Dataset):
     # -------- 内部ユーティリティ --------
     def reset(self):
         """データセットの形状をリセット"""
+        self.logger.info("reset dataset!")
         self.dataset = self.raw_dataset
 
 
     def concat(self):
         # 連結テキストモード
+        self.logger.info("simple sentence mode...")
         self.dataset: list[dict[str, Any]] = []
         sep = "\n"
         for sample in self.raw_dataset:
@@ -146,6 +148,7 @@ class GradePredictionDataset(Dataset):
 
     def unzip(self):
         # 分割テキストモード
+        self.logger.info("15 * 5 sentence mode...")
         self.dataset = []  # 元のデータセットをクリア
         for sample in self.raw_dataset:
             userid = sample["userid"]
@@ -167,6 +170,7 @@ class GradePredictionDataset(Dataset):
 
     def extention(self):
         # 学習用データセットに拡張データを追加
+        self.logger.info("use extention data...")
         ext_df = pd.read_csv(Path(self.dataset_path) / "extdata.csv")
         for _, row in ext_df.iterrows():
             # 拡張データの行を追加
