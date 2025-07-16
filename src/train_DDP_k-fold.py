@@ -490,104 +490,6 @@ def main():
         "\n====================================\n===================================="
     )
 
-    # モデルの削除（一時保留）
-    del model, tokenizer, eval_loader
-    torch.cuda.empty_cache()  # GPUメモリを解放
-    logger.info("🔄 Reloading model and tokenizer...")
-
-    # 再度ロード
-    model, tokenizer = load_model(args.base_model, if_ZeRO=True)
-
-    logger.info("✅ Model and tokenizer reloaded successfully!")
-
-    # ================================================================
-    # 訓練用の設定
-    # ================================================================
-
-    # ① LoRA設定
-    peft_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
-        target_modules=[
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",  # Self-Attention系
-            "gate_proj",
-            "up_proj",
-            "down_proj",  # MLP（FFN）系
-        ],
-    )
-
-    # LoRA適用
-    model.enable_input_require_grads()  #! 追加::入力テンソルに勾配を流せる状態を強制する安全スイッチ
-    model = get_peft_model(model, peft_config)
-
-    logger.info(f"Trainable parameters:")
-    model.print_trainable_parameters()
-    logger.info("✅ LoRA has been successfully applied to the model.")
-    logger.debug(summary(model))
-
-    # full_finetune_modules のモジュールを再度 trainable にする
-    full_finetune_modules = ["embed_tokens", "lm_head"]
-
-    logger.info("🔧 Applying LoRA and enabling full finetune modules...")
-
-    # LoRA 適用済み（前段） -> ZeRO 3 でエラーが発生する可能性あり
-    # for name, param in model.named_parameters():
-    #     if any(module_name in name for module_name in full_finetune_modules):
-    #         param.requires_grad = False
-    #         param.data = param.data.to(torch.float16)
-
-    logger.info("✅ LoRA has been applied.")
-    logger.info(
-        f"✅ The following modules are fully finetuned: {', '.join(full_finetune_modules)}"
-    )
-
-    model.gradient_checkpointing_enable()
-    # if local_rank == 0:
-    #     model.logger.info_trainable_parameters()
-    #     summary(model, depth=2)
-
-    logger.debug("Trainable parameters:")
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            logger.debug(f" - {name}: {param.shape}, dtype: {param.dtype}")
-
-    print("=" * 100)
-    print("=" * 100)
-
-    # ②TrainingArguments
-    training_args = TrainingArguments(
-        gradient_checkpointing=True,
-        output_dir=args.output_dir,
-        per_device_train_batch_size=args.micro_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,  # args.grad_accum,
-        num_train_epochs=args.epochs,
-        warmup_ratio=0.03,
-        logging_dir="./logs",
-        logging_steps=50,
-        lr_scheduler_type="cosine",
-        optim="adamw_torch",
-        save_strategy="epoch",
-        eval_strategy="epoch",
-        fp16=True,
-        fp16_full_eval=True,
-        per_device_eval_batch_size=1,
-        eval_accumulation_steps=1,
-        remove_unused_columns=False,
-        run_name=args.run_name,
-        save_total_limit=args.epochs,
-        ddp_find_unused_parameters=False,
-        load_best_model_at_end=False,
-        label_names=["labels"],  # PEFT環境下では明示したほうが良いらしい？
-        learning_rate=2e-6,
-        disable_tqdm=True,  # tqdm消す
-    )
-
     groups = np.array([dataset[i]["userid"] for i in range(len(dataset))])
     logger.info(len(groups))
     gkf = GroupKFold(n_splits=5)
@@ -601,6 +503,106 @@ def main():
     # ================================================================
     for fold, (tr_idx, va_idx) in enumerate(gkf.split(
         X=np.zeros(len(dataset)), groups=groups)):
+
+        # モデルの削除（一時保留）
+        del model, tokenizer#, eval_loader
+        torch.cuda.empty_cache()  # GPUメモリを解放
+        logger.info("🔄 Reloading model and tokenizer...")
+
+        # 再度ロード
+        model, tokenizer = load_model(args.base_model, if_ZeRO=True)
+
+        logger.info("✅ Model and tokenizer reloaded successfully!")
+
+        # ================================================================
+        # 訓練用の設定
+        # ================================================================
+
+        # ① LoRA設定
+        peft_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+            target_modules=[
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",  # Self-Attention系
+                "gate_proj",
+                "up_proj",
+                "down_proj",  # MLP（FFN）系
+            ],
+        )
+
+        # LoRA適用
+        model.enable_input_require_grads()  #! 追加::入力テンソルに勾配を流せる状態を強制する安全スイッチ
+        model = get_peft_model(model, peft_config)
+
+        if fold == 0:
+            logger.info(f"Trainable parameters:")
+            model.print_trainable_parameters()
+            logger.info("✅ LoRA has been successfully applied to the model.")
+            logger.debug(summary(model))
+
+        # full_finetune_modules のモジュールを再度 trainable にする
+        full_finetune_modules = ["embed_tokens", "lm_head"]
+
+        logger.info("🔧 Applying LoRA and enabling full finetune modules...")
+
+        # LoRA 適用済み（前段） -> ZeRO 3 でエラーが発生する可能性あり
+        # for name, param in model.named_parameters():
+        #     if any(module_name in name for module_name in full_finetune_modules):
+        #         param.requires_grad = False
+        #         param.data = param.data.to(torch.float16)
+
+        logger.info("✅ LoRA has been applied.")
+        if fold == 0:
+            logger.info(
+                f"✅ The following modules are fully finetuned: {', '.join(full_finetune_modules)}"
+            )
+
+        model.gradient_checkpointing_enable()
+        # if local_rank == 0:
+        #     model.logger.info_trainable_parameters()
+        #     summary(model, depth=2)
+
+        logger.debug("Trainable parameters:")
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                logger.debug(f" - {name}: {param.shape}, dtype: {param.dtype}")
+
+        print("=" * 100)
+        print("=" * 100)
+
+        # ②TrainingArguments
+        training_args = TrainingArguments(
+            gradient_checkpointing=True,
+            output_dir=args.output_dir,
+            per_device_train_batch_size=args.micro_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,  # args.grad_accum,
+            num_train_epochs=args.epochs,
+            warmup_ratio=0.03,
+            logging_dir="./logs",
+            logging_steps=50,
+            lr_scheduler_type="cosine",
+            optim="adamw_torch",
+            save_strategy="epoch",
+            eval_strategy="epoch",
+            fp16=True,
+            fp16_full_eval=True,
+            per_device_eval_batch_size=1,
+            eval_accumulation_steps=1,
+            remove_unused_columns=False,
+            run_name=args.run_name,
+            save_total_limit=args.epochs,
+            ddp_find_unused_parameters=False,
+            load_best_model_at_end=False,
+            label_names=["labels"],  # PEFT環境下では明示したほうが良いらしい？
+            learning_rate=2e-6,
+            disable_tqdm=True,  # tqdm消す
+        )
         msg = "\n".join(
             [
                 "=================================================",
@@ -740,6 +742,8 @@ def main():
             ]
         )
         logger.info(msg)
+        del(loader)
+
 
 
 if __name__ == "__main__":

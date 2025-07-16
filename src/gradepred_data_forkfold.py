@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 import re, unicodedata
 import pandas as pd
-from torch.utils.data import Dataset, Subset 
+from torch.utils.data import Dataset, Subset
 from typing import Any, Iterable, Sequence
 import torch
 from sklearn.model_selection import train_test_split
@@ -56,19 +56,22 @@ class GradePredictionDataset(Dataset):
     """
 
     # -------- Dataset インタフェース --------
-    def __init__(self,
-                 dataset_path: Path,
-                 logger: logging.Logger | None = None,
-                 fill_token: str = "NaN",
-                 answer_col: str = "answer_content",
-                 question_filter: Sequence[int] | None = None,
-                 merge_key: str = "userid",
-                 ):
+    def __init__(
+        self,
+        dataset_path: Path,
+        logger: logging.Logger | None = None,
+        fill_token: str = "NaN",
+        answer_col: str = "answer_content",
+        question_filter: Sequence[int] | None = None,
+        merge_key: str = "userid",
+        max_tokens: int = 3072,
+    ):
         """
         ファイルを読み込み，データセットを構成する
         """
         self.logger = logger or logging.getLogger(__name__)
         self.fill_token = fill_token
+        self.max_tokens = max_tokens
 
         self.answer_col = answer_col
         self.dataset_path = dataset_path
@@ -94,11 +97,7 @@ class GradePredictionDataset(Dataset):
         df = pd.merge(left, right, on=merge_key, how="inner")
         df["label"] = df["grade"].map(label_map)
         # df["userid"]内のユニーク値をリストにして保持（昇順）
-        user_ids = (
-            df["userid"]
-            .dropna()            # 欠損を除外
-            .unique()            # 重複排除
-        )
+        user_ids = df["userid"].dropna().unique()  # 欠損を除外  # 重複排除
         self.user_ids = sorted(user_ids.tolist())  # list 化して昇順ソート
 
         # ----------- 前処理 & ネスト構築 -----------
@@ -113,18 +112,14 @@ class GradePredictionDataset(Dataset):
     def __len__(self):
         return len(self.dataset)
 
-
-    def __getitem__(self, idx:int):
+    def __getitem__(self, idx: int):
         return self.dataset[idx]
-    
-
 
     # -------- 内部ユーティリティ --------
     def reset(self):
         """データセットの形状をリセット"""
         self.logger.info("reset dataset!")
         self.dataset = self.raw_dataset
-
 
     def concat(self):
         # 連結テキストモード
@@ -145,6 +140,7 @@ class GradePredictionDataset(Dataset):
                     "input_text": sep.join(lines),
                 }
             )
+        self.trim_dataset()
 
     def unzip(self):
         # 分割テキストモード
@@ -174,7 +170,7 @@ class GradePredictionDataset(Dataset):
         ext_df = pd.read_csv(Path(self.dataset_path) / "extdata.csv")
         for _, row in ext_df.iterrows():
             # 拡張データの行を追加
-            
+
             # raw["grade"]に，(0~4)のラベルが含まれている
             # このとき，4:A, 3:B, 2:C, 1:D, 0:F に対応しているため，
             # label : 4->0 , 3->1, 2->2, 1->3, 0->4と変換，
@@ -198,7 +194,6 @@ class GradePredictionDataset(Dataset):
                     "input_text": row["answer"],
                 }
             )
-
 
     def _read_folder(self, path: Path) -> pd.DataFrame:
         """
@@ -337,17 +332,155 @@ class GradePredictionDataset(Dataset):
             samples.append(entry)
         return samples
 
+    def trim_dataset(self) -> None:
+        """
+        データセット内の各回答を最大トークン数に収まるように切り詰める
+        L1-Q1 - L15-Q5までのそれぞれの文章長を取得し，各文章を最大トークン数に収まるように切り詰める
+        Parameters
+        ----------
+        max_tokens : int
+            切り詰める最大トークン数
+        dataset : list[dict[str, Any]]
+            対象データセット
+            ユーザ単位のネスト辞書リスト
+            各辞書は以下の形式：
+            {
+                "userid": str,      # ユーザID
+                "labels": int,      # ラベル (0~4)
+                "grades": str,      # 成績 (A, B, C, D, F)
+                "L1": {             # 講義回1の回答
+                    "Q1": str,     # Q1の回答
+                    "Q2": str,     # Q2の回答
+                    ...
+                },
+                ...
+            }
+        Returns
+        -------
+        dataset : list[dict[str, Any]]
+            切り詰めたデータセット
+
+        """
+        dataset = self.dataset
+        max_tokens = self.max_tokens
+        truncate_end = "right"  # 切り詰める方向（"right" or "left"）
+
+        for sample in dataset:
+            # --- 1) 回答ごとの token 列を収集 -----------------
+            token_info: list[tuple[tuple[str, str], list[int]]] = (
+                []
+            )  # ((L?,Q?), tokens)
+            for c in range(1, 16):
+                c_key = f"L{c}"
+                if c_key not in sample:
+                    continue
+                for qn in self.q_filter:
+                    q_key = f"Q{qn}"
+                    ans = sample[c_key].get(q_key, "")
+                    # トークン数の取得
+                    tokens = self.tokenizer.encode(
+                        ans, add_special_tokens=False, truncation=False
+                    )
+                    token_info.append(((c_key, q_key), tokens))
+
+            # 各回答のトークン数の合計を取得
+            total_tokens = sum(len(tokens) for _, tokens in token_info)
+            if total_tokens <= max_tokens:
+                continue
+
+            trim = max_tokens - total_tokens
+            self.logger.debug(
+                f"Sample {sample['userid']} exceeds max_tokens ({total_tokens} > {max_tokens}). Trimm {trim} tokens."
+            )
+            # --- 2) 長い順に削減 -------------------------------
+            token_info.sort(key=lambda x: len(x[1]), reverse=True)
+            # idx = 0
+            # while total_tokens > max_tokens and idx < len(token_info):
+            #     entry = token_info[idx][1]
+            #     if len(entry) > 1:
+            #         if truncate_end == "right":
+            #             entry.pop()
+            #         else:
+            #             entry.pop(0)
+            #         total_tokens -= 1
+            #     else:
+            #         idx += 1  # 次へ
+
+            ELLIPSIS_TOKENS = self.tokenizer.encode("...", add_special_tokens=False)
+            ELLIPSIS_LEN = len(ELLIPSIS_TOKENS)
+
+            while total_tokens > max_tokens:
+                # 今回だけの長さ順
+                token_info.sort(key=lambda x: len(x[1]), reverse=True)
+                entry_tokens = token_info[0][1]  # 現在最長
+
+                # これ以上削れない（エリプシスだけ残っている or 長さ不足）
+                if len(entry_tokens) <= ELLIPSIS_LEN:
+                    break
+
+                # ① 末尾に ... が 既に 付いているか確認
+                if entry_tokens[-ELLIPSIS_LEN:] == ELLIPSIS_TOKENS:
+                    # ② 既に ... がある → その直前を削る
+                    del entry_tokens[-ELLIPSIS_LEN - 1]
+                    total_tokens -= 1
+                else:
+                    # ③ まだ無ければ 末尾1トークンを ... に置換
+                    entry_tokens.pop()  # 1 トークン削除
+                    entry_tokens.extend(ELLIPSIS_TOKENS)  # ... を追加
+                    # pop と extend で ( -1 + ELLIPSIS_LEN ) だけ総トークンが増減
+                    total_tokens += ELLIPSIS_LEN - 1
+
+            #! ライブラリ追加したらこっちのほうが計算量が少なくなる
+            # import heapq
+
+            # # token_info: [((c_key,q_key), tokens), ...]  # 前段で生成済み
+            # heap = [(-len(toks), i) for i, (_, toks) in enumerate(token_info)]
+            # heapq.heapify(heap)
+
+            # while total_tokens > max_tokens:
+            #     neg_len, i = heapq.heappop(heap)          # 最長を取得
+            #     toks = token_info[i][1]
+            #     if len(toks) == 1:                        # これ以上削れない
+            #         continue
+            #     pop_idx = -1 if truncate_end == "right" else 0
+            #     toks.pop(pop_idx)                         # 1トークン削除
+            #     total_tokens -= 1
+            #     heapq.heappush(heap, (-len(toks), i))     # 更新して再投入
+
+            # --- 3) 文章を戻す --------------------------------
+            for (c_key, q_key), toks in token_info:
+                sample[c_key][q_key] = self.tokenizer.decode(
+                    toks, skip_special_tokens=True
+                )
+
+        for sample in dataset:
+            # 各回答を連結，使わないキーを削除[仮コード]
+            lines = []
+            for c in range(1, 16):
+                c_key = f"L{c}"
+                if c_key not in sample:
+                    continue
+                for qn in self.q_filter:
+                    q_key = f"Q{qn}"
+                    ans = sample[c_key].get(q_key, "")
+                    lines.append(f"{c_key}-{q_key}: {ans}")
+            sample["input_text"] = "\n".join(lines)
+
+        self.dataset = dataset
+        del dataset  # メモリ解放
+
 
 class ext_GPDataset(GradePredictionDataset):
     """
     拡張データだけ入手（あとでtrain datasetに結合）
     """
+
     def __init__(self, dataset_path: Path):
         # super().__init__()
         self.dataset_path = dataset_path
         self.dataset: list[dict[str, Any]] = []
         self.extention()
-        
+
 
 class GradePredictionCollator:
     """
