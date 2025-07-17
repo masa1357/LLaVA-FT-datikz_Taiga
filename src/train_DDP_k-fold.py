@@ -404,11 +404,18 @@ def main():
     pred_text = []
     input_text = []
     label_text = []
+    eval_collator = GradePredictionCollator(
+            tokenizer,
+            max_tokens=args.max_words,
+            include_target=False,
+            logger=eval_logger,
+            question_filter=[1],
+    )
     eval_loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=example_collator,
+        collate_fn=eval_collator,
     )
 
     model, eval_loader = acc.prepare(model, eval_loader)  # DDP対応化
