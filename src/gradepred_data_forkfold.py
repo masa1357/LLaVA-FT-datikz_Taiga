@@ -125,6 +125,7 @@ class GradePredictionDataset(Dataset):
     def concat(self):
         # 連結テキストモード
         self.logger.info("simple sentence mode...")
+        self.trim_dataset()
         self.dataset: list[dict[str, Any]] = []
         sep = "\n"
         for sample in self.raw_dataset:
@@ -141,7 +142,6 @@ class GradePredictionDataset(Dataset):
                     "input_text": sep.join(lines),
                 }
             )
-        self.trim_dataset()
 
     def unzip(self):
         # 分割テキストモード
@@ -362,6 +362,12 @@ class GradePredictionDataset(Dataset):
             切り詰めたデータセット
 
         """
+        # tokenizerのロード
+        from transformers import AutoTokenizer
+
+        base_model = "elyza/Llama-3-ELYZA-JP-8B"
+        tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=True)
+
         dataset = self.dataset
         max_tokens = self.max_tokens
         truncate_end = "right"  # 切り詰める方向（"right" or "left"）
@@ -379,7 +385,7 @@ class GradePredictionDataset(Dataset):
                     q_key = f"Q{qn}"
                     ans = sample[c_key].get(q_key, "")
                     # トークン数の取得
-                    tokens = self.tokenizer.encode(
+                    tokens = tokenizer.encode(
                         ans, add_special_tokens=False, truncation=False
                     )
                     token_info.append(((c_key, q_key), tokens))
@@ -407,7 +413,7 @@ class GradePredictionDataset(Dataset):
             #     else:
             #         idx += 1  # 次へ
 
-            ELLIPSIS_TOKENS = self.tokenizer.encode("...", add_special_tokens=False)
+            ELLIPSIS_TOKENS = tokenizer.encode("...", add_special_tokens=False)
             ELLIPSIS_LEN = len(ELLIPSIS_TOKENS)
 
             while total_tokens > max_tokens:
@@ -450,9 +456,7 @@ class GradePredictionDataset(Dataset):
 
             # --- 3) 文章を戻す --------------------------------
             for (c_key, q_key), toks in token_info:
-                sample[c_key][q_key] = self.tokenizer.decode(
-                    toks, skip_special_tokens=True
-                )
+                sample[c_key][q_key] = tokenizer.decode(toks, skip_special_tokens=True)
 
         for sample in dataset:
             # 各回答を連結，使わないキーを削除[仮コード]
