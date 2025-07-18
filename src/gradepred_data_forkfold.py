@@ -75,6 +75,7 @@ class GradePredictionDataset(Dataset):
 
         self.answer_col = answer_col
         self.dataset_path = dataset_path
+        self.question_filter = question_filter
 
         # フィルタが None→全質問(1-5)、指定がある→重複排除 + ソート
         self.q_filter = (
@@ -578,8 +579,8 @@ class GradePredictionCollator:
         grades = [ex["grades"] for ex in features]
         tgt_str = [f" この学生の成績は、{g}です。" for g in grades]
 
-        self.logger.debug("prompt sample:\n%s", prompts[0][:500])
-        self.logger.debug("grade sample: %s", tgt_str[0][:50])
+        self.logger.debug("\nprompt sample:\n%s", prompts[0][:500])
+        self.logger.debug("\ngrade sample: %s", tgt_str[0][:50])
 
         enc_prompt = self.tokenizer(
             prompts,
@@ -591,7 +592,7 @@ class GradePredictionCollator:
 
         enc_tgt = self.tokenizer(tgt_str, add_special_tokens=False, padding=False)
 
-        self.logger.debug("Tokenization Done")
+        self.logger.info("Tokenization Done")
 
         input_ids, labels = [], []
         for p_ids, t_ids in zip(enc_prompt["input_ids"], enc_tgt["input_ids"]):
@@ -628,9 +629,9 @@ class GradePredictionCollator:
             batch_lbl = pad_sequence(labels, batch_first=True, padding_value=-100)
             attn_mask = batch_ids.ne(self.tokenizer.pad_token_id).long()
 
-        self.logger.debug("Collating Done")
+        self.logger.info("Collating Done")
 
-        self.logger.debug(
+        self.logger.info(
             "Collate: %d samples, max_tokens=%d",
             len(features),
             self.max_tokens,

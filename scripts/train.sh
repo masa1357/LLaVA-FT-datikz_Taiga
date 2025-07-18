@@ -13,6 +13,7 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         accelerate launch \
         --config_file ds_zero3.yaml \
         src/train_DDP_k-fold.py \
+        --base_model tokyotech-llm/Llama-3.1-Swallow-8B-Instruct-v0.3 \
         --output_dir ./outputs/llama3-elyza-8b-lora \
         --epochs 15 \
         --batch_size 4 \

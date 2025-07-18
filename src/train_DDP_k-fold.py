@@ -7,6 +7,7 @@
 #   - k-foldを採用
 # 対象モデル；
 #   - elyza/Llama-3-ELYZA-JP-8B
+#   - 
 # =====================================================================
 
 # ================ 標準ライブラリ ================
@@ -43,7 +44,7 @@ import evaluate  # ROUGE / BERTScore / MoverScore ラッパ
 from transformers import Trainer, TrainingArguments, set_seed, GenerationConfig, TrainerCallback
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers.trainer_utils import EvalPrediction, PredictionOutput
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, f1_score
 from sklearn.model_selection import GroupKFold
 
 
@@ -71,6 +72,8 @@ BYTES_PER_PARAM = {
     torch.int8: 1,
 }
 
+grade2id = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
+
 if not hasattr(np, "float"):
     np.float = float
 
@@ -82,13 +85,26 @@ class LoggingWithStepCallback(TrainerCallback):
                 **logs  # loss, lr, etc.
             }
             
+def extract_grade(text: str) -> str:
+    # 1. 文字列から[/INST]以前の部分を削除
+    text = text.split("[/INST]")[-1]
 
+    # 2. 文字列から成績を抽出
+    # 「成績は、Xです」の X を正規表現で抜く
+    m = re.search(r"成績は、([A-D]|F)です", text)
+    if m:
+        return m.group(1)
+    else:
+        for grade in ["A", "B", "C", "D", "F"]:
+            if grade in text:
+                return grade
+    return "F"  # デフォルトは F
 
 def evaluate(
     pred_result,
     eval_dataset,
     tokenizer,
-    show_samples: int = 5,
+    show_samples: int = 3,
     logger: Logger = getLogger("EvaluationLogger"),
 ) -> Dict[str, float]:
 
@@ -148,20 +164,7 @@ def evaluate(
     # Metrics #3    : Accuracy
     # -> target内には[A,B,C,D,F]のいずれかを含む文字列が入っている
     # predictionとtargetから最初に出現する["A", "B", "C", "D", "F"]を抽出して比較する
-    def extract_grade(text: str) -> str:
-        # 1. 文字列から[/INST]以前の部分を削除
-        text = text.split("[/INST]")[-1]
 
-        # 2. 文字列から成績を抽出
-        # 「成績は、Xです」の X を正規表現で抜く
-        m = re.search(r"成績は、([A-D]|F)です", text)
-        if m:
-            return m.group(1)
-        else:
-            for grade in ["A", "B", "C", "D", "F"]:
-                if grade in text:
-                    return grade
-        return "F"  # デフォルトは F
 
     pred_grades = [extract_grade(text) for text in pred_text]
     label_grades = [extract_grade(text) for text in label_text]
@@ -174,7 +177,7 @@ def evaluate(
     # 予測に成功しているケースをいくつか表示
     if show_samples > 0:
         logger.info("⭕ Visualize successful predictions")
-        for i in range(len(pred_text)):
+        for i in range(show_samples):
             if pred_grades[i] == label_grades[i]:
                 msg = "\n".join(
                     [
@@ -190,10 +193,11 @@ def evaluate(
     # 予測に失敗しているケースをいくつか表示
     if show_samples > 0:
         logger.info("❌ Visualize failed predictions")
-        for i in range(len(pred_text)):
+        for i in range(show_samples):
             if pred_grades[i] != label_grades[i]:
                 msg = "\n".join(
                     [
+                        "",
                         "========================",
                         f"Sample {i}:",
                         f"Predict\t: {pred_text[i]} (Grade: {pred_grades[i]})",
@@ -211,9 +215,51 @@ def evaluate(
     }
 
 
-def custom_compute_metrics(res: EvalPrediction) -> Dict:
+def custom_compute_metrics(res, tokenizer) -> Dict:
+    """
+    Seq2SeqTrainer / Trainer 用 compute_metrics 関数
+    - res.predictions, res.label_ids : ndarray
+        shape == (バッチ総サイズ, シーケンス長)
+    - tokenizer : partial / ラムダで閉じ込めておく
+    """
+    # 1. 予測・ラベルをトークン ID → 文字列に変換
+    pred_ids = res.predictions
+    # beam_search を使うと predictions が (batch, beams, seq_len) になるので 0 番目を採用
+    if isinstance(pred_ids, tuple) or pred_ids.ndim == 3:
+        pred_ids = pred_ids[0] if isinstance(pred_ids, tuple) else pred_ids[:, 0, :]
 
-    return {}
+    label_ids = np.copy(res.label_ids)
+    # ラベルは -100 で埋められているので PAD トークンに置換してからデコード
+    label_ids[label_ids == -100] = tokenizer.pad_token_id
+
+    pred_text = tokenizer.batch_decode(
+        pred_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
+    )
+    label_text = tokenizer.batch_decode(
+        label_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
+    )
+
+    # 2. 文字列から成績を抽出
+    pred_grades  = [extract_grade(t) for t in pred_text]
+    label_grades = [extract_grade(t) for t in label_text]
+
+    # 3. Accuracy
+    accuracy = (np.array(pred_grades) == np.array(label_grades)).mean() * 100.0
+
+    # 4. F1（Macro 平均）
+    y_pred = [grade2id[g] for g in pred_grades]
+    y_true = [grade2id[g] for g in label_grades]
+    f1 = f1_score(y_true, y_pred, average="macro") * 100.0
+
+    # 5. 他の既存メトリクスをここで計算しているなら dict にマージ
+    # 例:
+    # rouge = rouge_metric.compute(predictions=pred_text, references=label_text, use_stemmer=True)
+    # return {"accuracy": accuracy, "f1": f1, **rouge}
+
+    return {
+        "accuracy": round(accuracy, 2),
+        "f1":       round(f1, 2),
+    }
 
 
 # DummyFile: 何も書き込まないダミークラス
@@ -229,6 +275,8 @@ def main():
     # ? logger設定
     print("set logger")
     logger = set_logger(level=DEBUG)
+    train_logger = set_logger(name="CollateTrain", level=INFO)
+    eval_logger = set_logger(name="CollateEval", level=INFO)
 
     acc = Accelerator()
     if not acc.is_main_process:
@@ -358,7 +406,7 @@ def main():
             tokenizer,
             max_tokens=args.max_words,
             include_target=True,
-            logger=logger,
+            logger=eval_logger,
         )
 
 
@@ -394,6 +442,7 @@ def main():
     # ================================================================
     msg = "\n".join(
         [
+            "",
             "=================================================",
             "🔄 Start Evaluation before training...",
             "=================================================",
@@ -486,6 +535,7 @@ def main():
     )
     msg = "\n".join(
         [
+            "",
             "=================================================",
             "confusion_matrix:",
             f"{metrics['confusion_matrix']}",
@@ -501,8 +551,7 @@ def main():
     logger.info(len(groups))
     gkf = GroupKFold(n_splits=5)
 
-    train_logger = set_logger(name="CollateTrain", level=INFO)
-    eval_logger = set_logger(name="CollateEval", level=INFO)
+
 
 
     # ================================================================
@@ -612,6 +661,7 @@ def main():
         )
         msg = "\n".join(
             [
+                "",
                 "=================================================",
                 f"🔄 Start {fold}th fold...",
                 "=================================================",
@@ -742,6 +792,7 @@ def main():
         )
         msg = "\n".join(
             [
+                "",
                 "=================================================",
                 "confusion_matrix:",
                 f"{metrics['confusion_matrix']}",
