@@ -126,14 +126,18 @@ class GradePredictionDataset(Dataset):
         # 連結テキストモード
         self.logger.info("simple sentence mode...")
         self.trim_dataset()
-        self.dataset: list[dict[str, Any]] = []
+        tmp_dataset = self.dataset
+        self.dataset = []
         sep = "\n"
-        for sample in self.raw_dataset:
-            lines: list[str] = []
-            for c in range(1, 16):
-                for qn in self.q_filter:
-                    ans = sample[f"L{c}"][f"Q{qn}"]
-                    lines.append(f"L{c:02d}-Q{qn}: {ans}")
+
+        for sample in tmp_dataset:
+            # ① L01〜L15, ② self.q_filter にある設問  の直積で回す
+            lines = [
+                f"L{c:02d}-Q{qn}: {sample[f'L{c}'][f'Q{qn}']}"
+                for c in range(1, 16)
+                for qn in self.q_filter
+            ]
+
             self.dataset.append(
                 {
                     "userid": sample["userid"],
@@ -142,6 +146,20 @@ class GradePredictionDataset(Dataset):
                     "input_text": sep.join(lines),
                 }
             )
+        # for sample in tmp_dataset:
+        #     lines: list[str] = []
+        #     for c in range(1, 16):
+        #         for qn in self.q_filter:
+        #             ans = sample[f"L{c}"][f"Q{qn}"]
+        #             lines.append(f"L{c:02d}-Q{qn}: {ans}")
+        #     self.dataset.append(
+        #         {
+        #             "userid": sample["userid"],
+        #             "labels": sample["labels"],
+        #             "grades": sample["grades"],
+        #             "input_text": sep.join(lines),
+        #         }
+        #     )
 
     def unzip(self):
         # 分割テキストモード
