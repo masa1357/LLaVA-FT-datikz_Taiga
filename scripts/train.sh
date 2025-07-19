@@ -13,7 +13,7 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         accelerate launch \
         --config_file ds_zero3.yaml \
         src/train_DDP_k-fold.py \
-        --base_model tokyotech-llm/Llama-3.1-Swallow-8B-Instruct-v0.3 \
+        --base_model elyza/Llama-3-ELYZA-JP-8B \
         --output_dir ./outputs/llama3-elyza-8b-lora \
         --epochs 15 \
         --batch_size 4 \
@@ -23,6 +23,10 @@ CMD="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         "
 
 echo "Running command at $(date):" | tee "$LOGFILE"
+echo "Command : $(CMD)" | tee "$LOGFILE"
 pip list | grep -E 'torch|deepspeed|transformers|accelerate|safetensors' | tee -a "$LOGFILE"
 echo "$CMD " | tee -a "$LOGFILE"
 eval $CMD 2>&1 | tee -a "$LOGFILE"
+
+# models::
+# tokyotech-llm/Llama-3.1-Swallow-8B-Instruct-v0.3
